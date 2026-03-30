@@ -176,15 +176,16 @@ async def upload_video(
         source_unique_filename = f"{uuid.uuid4()}_{source_file.filename}"
         try:
             source_data = await source_file.read()
+            # Try uploading with the inferred content type if specific one fails
             supabase.storage.from_(SUPABASE_BUCKET).upload(
                 path=source_unique_filename,
                 file=source_data,
-                file_options={"content-type": "text/x-python"}
+                file_options={"content-type": "text/plain"} # Use text/plain for better compatibility
             )
             manim_source_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(source_unique_filename)
         except Exception as e:
-            print(f"Failed to upload source file: {e}")
-            # We continue even if source upload fails, but video is uploaded
+            # Re-raise as 500 so we can see the error in frontend
+            raise HTTPException(status_code=500, detail=f"Failed to upload Manim source to Supabase: {str(e)}")
     
     new_video = Video(
         title=title,
