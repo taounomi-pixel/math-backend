@@ -23,5 +23,5 @@ else:
 engine = create_engine(DATABASE_URL, echo=True, connect_args=connect_args)
 
 def create_db_and_tables():
-    # This automatically syncs the Models to create empty SQL tables
+    # This automatically syncs the Models to create empty SQL tables (PostgreSQL/SQLite)
     SQLModel.metadata.create_all(engine)

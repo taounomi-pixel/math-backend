@@ -134,6 +134,9 @@ async def upload_video(
     """
     Upload a local MP4 file to the server and create a database record.
     """
+    print(f"DEBUG: Received upload request. Title: {title}")
+    print(f"DEBUG: Video file: {file.filename if file else 'None'}")
+    print(f"DEBUG: Source file: {source_file.filename if source_file else 'None'}")
     if not file.filename.endswith('.mp4'):
         raise HTTPException(status_code=400, detail="Only .mp4 files are supported.")
         

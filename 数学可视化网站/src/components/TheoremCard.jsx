@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { PlayCircle, Bookmark, Play, Heart, Loader2 } from 'lucide-react';
+import { PlayCircle, Bookmark, Play, Heart, Loader2, Trash2, Code } from 'lucide-react';
 import { useLanguage } from '../contexts/LanguageContext';
 
 const TheoremCard = ({ searchQuery = "" }) => {
@@ -28,8 +28,36 @@ const TheoremCard = ({ searchQuery = "" }) => {
     
     // Listen for upload success events triggered by Header > UploadModal
     window.addEventListener('videoUploaded', fetchVideos);
-    return () => window.removeEventListener('videoUploaded', fetchVideos);
+    return () => {
+      window.removeEventListener('videoUploaded', fetchVideos);
+    };
   }, []);
+
+  const currentUserId = localStorage.getItem('user_id') ? parseInt(localStorage.getItem('user_id'), 10) : null;
+  const currentUsername = localStorage.getItem('username');
+
+  const handleDelete = async (videoId) => {
+    if (!window.confirm(t('deleteConfirm'))) return;
+
+    const token = localStorage.getItem('access_token');
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000/api`;
+      const response = await fetch(`${apiUrl}/videos/${videoId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) throw new Error(t('errDeleteFail'));
+
+      // Remove from state
+      setVideos(prev => prev.filter(v => v.id !== videoId));
+      alert(t('deleteSuccess'));
+    } catch (err) {
+      alert(err.message);
+    }
+  };
 
   const handleLike = async (videoId) => {
     const token = localStorage.getItem('access_token');
@@ -111,13 +139,20 @@ const TheoremCard = ({ searchQuery = "" }) => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '48px', margin: '24px 0' }}>
       {filteredVideos.map(video => (
-        <VideoItem key={video.id} video={video} handleLike={handleLike} t={t} />
+        <VideoItem 
+          key={video.id} 
+          video={video} 
+          handleLike={handleLike} 
+          handleDelete={handleDelete}
+          isOwner={currentUserId === video.uploader_id || (currentUsername && currentUsername === video.uploader_username)}
+          t={t} 
+        />
       ))}
     </div>
   );
 };
 
-const VideoItem = ({ video, handleLike, t }) => {
+const VideoItem = ({ video, handleLike, handleDelete, isOwner, t }) => {
   return (
     <section className="hero-section" style={{ minHeight: 'auto', padding: '32px', gap: '32px' }}>
       <div className="hero-content">
@@ -143,6 +178,36 @@ const VideoItem = ({ video, handleLike, t }) => {
             <Heart size={20} fill={video._liked ? "currentColor" : "none"} /> 
             {video.like_count} {t('likes')}
           </button>
+          
+          {video.manim_source_url && (
+            <button 
+              className="btn-ghost" 
+              onClick={() => window.open(video.manim_source_url, '_blank')}
+              style={{ 
+                display: 'flex', gap: '8px', alignItems: 'center', 
+                padding: '8px 16px', border: '1px solid var(--border-color)', 
+                borderRadius: '8px', color: 'var(--text-primary)' 
+              }}
+            >
+              <Code size={18} />
+              {t('viewCode')}
+            </button>
+          )}
+          
+          {isOwner && (
+            <button 
+              className="btn-ghost" 
+              onClick={() => handleDelete(video.id)}
+              style={{ 
+                display: 'flex', gap: '8px', alignItems: 'center', 
+                color: '#ef4444', padding: '8px 16px',
+                border: '1px solid #fecaca', borderRadius: '8px'
+              }}
+            >
+              <Trash2 size={18} />
+              {t('btnDelete')}
+            </button>
+          )}
         </div>
       </div>
       <div className="hero-visual" style={{ flex: '1 1 50%' }}>
