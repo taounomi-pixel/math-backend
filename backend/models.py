@@ -29,6 +29,9 @@ class VideoBase(SQLModel):
     title: str
     video_url: str  # Direct AWS S3 Object URL (.mp4)
     manim_source_url: Optional[str] = None # Optional AWS S3 URL (.py file)
+    category_l1: Optional[str] = None
+    category_l2: Optional[str] = None
+    tags: Optional[str] = None
     view_count: int = Field(default=0)
 
 class Video(VideoBase, table=True):
@@ -39,8 +42,8 @@ class Video(VideoBase, table=True):
 
     # Relationship Back-references
     uploader: User = Relationship(back_populates="videos")
-    comments: List["Comment"] = Relationship(back_populates="video")
-    likes: List["Like"] = Relationship(back_populates="video")
+    comments: List["Comment"] = Relationship(back_populates="video", cascade_delete=True)
+    likes: List["Like"] = Relationship(back_populates="video", cascade_delete=True)
 
 # -----------------
 # Comment Models
@@ -51,8 +54,8 @@ class CommentBase(SQLModel):
 class Comment(CommentBase, table=True):
     __tablename__ = "comments"
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="users.id")
-    video_id: int = Field(foreign_key="videos.id")
+    user_id: int = Field(foreign_key="users.id", ondelete="CASCADE")
+    video_id: int = Field(foreign_key="videos.id", ondelete="CASCADE")
     created_at: datetime = Field(default_factory=get_utc_now)
 
     # Relationships
@@ -64,8 +67,8 @@ class Comment(CommentBase, table=True):
 # -----------------
 class Like(SQLModel, table=True):
     __tablename__ = "likes"
-    user_id: int = Field(foreign_key="users.id", primary_key=True)
-    video_id: int = Field(foreign_key="videos.id", primary_key=True)
+    user_id: int = Field(foreign_key="users.id", primary_key=True, ondelete="CASCADE")
+    video_id: int = Field(foreign_key="videos.id", primary_key=True, ondelete="CASCADE")
     created_at: datetime = Field(default_factory=get_utc_now)
 
     # Relationships

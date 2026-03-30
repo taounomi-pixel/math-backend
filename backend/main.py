@@ -11,7 +11,7 @@ import shutil
 
 # Local imports
 from database import create_db_and_tables, engine
-from models import User, UserBase, Video, Like
+from models import User, UserBase, Video, Like, Comment
 from auth import verify_password, get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -21,6 +21,20 @@ from contextlib import asynccontextmanager
 async def lifespan(app: FastAPI):
     # Automatically triggers SQLite table creation if files don't exist
     create_db_and_tables()
+    
+    # Auto-run un-applied DB migrations for free-tier deployments (no-shell)
+    try:
+        import migrate_categories
+        migrate_categories.migrate()
+    except Exception as e:
+        print(f"DEBUG: Category migration log: {e}")
+        
+    try:
+        import migrate_tags
+        migrate_tags.migrate()
+    except Exception as e:
+        print(f"DEBUG: Tags migration log: {e}")
+        
     yield
 
 app = FastAPI(title="MathVis API", lifespan=lifespan)
@@ -127,6 +141,9 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: Session
 @app.post("/api/videos")
 async def upload_video(
     title: str = Form(...),
+    category_l1: Optional[str] = Form(None),
+    category_l2: Optional[str] = Form(None),
+    tags: Optional[str] = Form(None),
     file: UploadFile = File(...),
     source_file: Optional[UploadFile] = File(None),
     current_user: User = Depends(get_current_user),
@@ -193,6 +210,9 @@ async def upload_video(
     
     new_video = Video(
         title=title,
+        category_l1=category_l1,
+        category_l2=category_l2,
+        tags=tags,
         video_url=video_url,
         manim_source_url=manim_source_url,
         uploader_id=current_user.id
@@ -217,6 +237,9 @@ def get_videos(session: Session = Depends(get_session)):
         results.append({
             "id": v.id,
             "title": v.title,
+            "category_l1": v.category_l1,
+            "category_l2": v.category_l2,
+            "tags": v.tags.split(',') if v.tags else [],
             "video_url": v.video_url,
             "manim_source_url": v.manim_source_url,
             "view_count": v.view_count,
@@ -239,7 +262,7 @@ def toggle_like_video(
     """
     video = session.get(Video, video_id)
     if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+        raise HTTPException(status_code=44, detail="Video not found")
         
     existing_like = session.exec(
         select(Like).where(Like.user_id == current_user.id, Like.video_id == video_id)
@@ -270,7 +293,7 @@ def delete_video(
     """
     video = session.get(Video, video_id)
     if not video:
-        raise HTTPException(status_code=404, detail=f"ID {video_id} NOT found in DB")
+        raise HTTPException(status_code=44, detail=f"ID {video_id} NOT found in DB")
         
     print(f"DEBUG: Deleting {video_id} - ReqID: {current_user.id}, OwnerID: {video.uploader_id}")
     if video.uploader_id != current_user.id:
@@ -278,26 +301,37 @@ def delete_video(
         
     # Attempt to delete from Supabase if configured
     if supabase:
+        from urllib.parse import urlparse
         files_to_remove = []
         
         # Add video file to removal list
         if video.video_url:
-            video_filename = video.video_url.split('/')[-1]
+            video_filename = urlparse(video.video_url).path.split('/')[-1]
             files_to_remove.append(video_filename)
             
         # Add manim source file to removal list
         if video.manim_source_url:
-            source_filename = video.manim_source_url.split('/')[-1]
+            source_filename = urlparse(video.manim_source_url).path.split('/')[-1]
             files_to_remove.append(source_filename)
             
         if files_to_remove:
             try:
                 supabase.storage.from_(SUPABASE_BUCKET).remove(files_to_remove)
+                print(f"DEBUG: Removed from Supabase Storage: {files_to_remove}")
             except Exception as e:
                 # We continue even if storage delete fails, but log it
                 print(f"Failed to delete from Supabase: {e}")
             
-    # Delete from DB
+    # Delete associated likes and comments first (handles pre-existing tables without CASCADE)
+    existing_likes = session.exec(select(Like).where(Like.video_id == video_id)).all()
+    for like in existing_likes:
+        session.delete(like)
+    
+    existing_comments = session.exec(select(Comment).where(Comment.video_id == video_id)).all()
+    for comment in existing_comments:
+        session.delete(comment)
+    
+    # Delete the video record itself
     session.delete(video)
     session.commit()
     
