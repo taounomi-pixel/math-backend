@@ -1,0 +1,28 @@
+# Python
+backend/__pycache__/
+backend/*.pyc
+backend/.env
+backend/mathvis.db
+backend/uploads/
+vantage/
+.venv/
+env/
+build/
+dist/
+
+# Node.js
+数学可视化网站/node_modules/
+数学可视化网站/dist/
+数学可视化网站/.env
+数学可视化网站/.env.local
+数学可视化网站/.env.production.local
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

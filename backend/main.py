@@ -1,0 +1,238 @@
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.staticfiles import StaticFiles
+from sqlmodel import Session, select
+from datetime import timedelta
+import boto3
+import uuid
+import os
+import shutil
+
+# Local imports
+from database import create_db_and_tables, engine
+from models import User, UserBase, Video, Like
+from auth import verify_password, get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM
+from fastapi.middleware.cors import CORSMiddleware
+
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Automatically triggers SQLite table creation if files don't exist
+    create_db_and_tables()
+    yield
+
+app = FastAPI(title="MathVis API", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Setup OAuth2 scheme
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
+
+# Mount static files to serve uploaded videos
+os.makedirs("uploads", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+from dotenv import load_dotenv
+from supabase import create_client, Client
+
+# Load environment variables
+load_dotenv()
+
+# Setup Supabase
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET_NAME", "videos")
+
+supabase: Client = None
+if SUPABASE_URL and SUPABASE_KEY:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def get_session():
+    with Session(engine) as session:
+        yield session
+
+# -----------------
+# Auth Routes
+# -----------------
+@app.post("/api/register", response_model=UserBase)
+def register_user(user_in: UserBase, password: str, session: Session = Depends(get_session)):
+    existing_user = session.exec(select(User).where(User.username == user_in.username)).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    
+    hashed_password = get_password_hash(password)
+    new_user = User(username=user_in.username, password_hash=hashed_password)
+    
+    session.add(new_user)
+    session.commit()
+    session.refresh(new_user)
+    return new_user
+
+@app.post("/api/login")
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_session)):
+    user = session.exec(select(User).where(User.username == form_data.username)).first()
+    if not user or not verify_password(form_data.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username, "id": user.id}, 
+        expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+async def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
+    from jose import jwt, JWTError
+    auth_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise auth_exception
+    except JWTError:
+        raise auth_exception
+        
+    user = session.exec(select(User).where(User.username == username)).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+# -----------------
+# Upload Routes
+# -----------------
+
+@app.post("/api/videos")
+async def upload_video(
+    title: str = Form(...),
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Upload a local MP4 file to the server and create a database record.
+    """
+    if not file.filename.endswith('.mp4'):
+        raise HTTPException(status_code=400, detail="Only .mp4 files are supported.")
+        
+    unique_filename = f"{uuid.uuid4()}_{file.filename}"
+    file_path = os.path.join("uploads", unique_filename)
+    
+    
+    video_url = ""
+    if supabase:
+        # Upload to Supabase Storage
+        try:
+            # Read the file data
+            file_data = await file.read()
+            
+            # Use supabase logic
+            supabase.storage.from_(SUPABASE_BUCKET).upload(
+                path=unique_filename,
+                file=file_data,
+                file_options={"content-type": file.content_type}
+            )
+            
+            # Get public URL
+            video_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(unique_filename)
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to upload to Supabase Storage: {str(e)}")
+    else:
+        # Fallback to local upload (for local dev or if Supabase is not configured)
+        file_path = os.path.join("uploads", unique_filename)
+        # Ensure we are at the start of the file in case read() was called
+        await file.seek(0)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        # Relative URL served by StaticFiles
+        video_url = f"/uploads/{unique_filename}"
+    
+    new_video = Video(
+        title=title,
+        video_url=video_url,
+        uploader_id=current_user.id
+    )
+    
+    session.add(new_video)
+    session.commit()
+    session.refresh(new_video)
+    
+    return {"message": "Video uploaded successfully", "video": new_video}
+
+@app.get("/api/videos")
+def get_videos(session: Session = Depends(get_session)):
+    """
+    Get all uploaded videos.
+    """
+    videos = session.exec(select(Video).order_by(Video.upload_time.desc())).all()
+    results = []
+    
+    # For MVP we iterate through video records and eagerly return like count and username
+    for v in videos:
+        results.append({
+            "id": v.id,
+            "title": v.title,
+            "video_url": v.video_url,
+            "view_count": v.view_count,
+            "upload_time": v.upload_time,
+            "uploader_username": v.uploader.username,
+            "like_count": len(v.likes)
+        })
+        
+    return results
+
+@app.post("/api/videos/{video_id}/like")
+def toggle_like_video(
+    video_id: int, 
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Toggle the like status of a video for the current user.
+    """
+    video = session.get(Video, video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+        
+    existing_like = session.exec(
+        select(Like).where(Like.user_id == current_user.id, Like.video_id == video_id)
+    ).first()
+    
+    if existing_like:
+        # Unlike
+        session.delete(existing_like)
+        session.commit()
+        new_count = len(session.exec(select(Like).where(Like.video_id == video_id)).all())
+        return {"action": "unliked", "like_count": new_count}
+    else:
+        # Like
+        new_like = Like(user_id=current_user.id, video_id=video_id)
+        session.add(new_like)
+        session.commit()
+        new_count = len(session.exec(select(Like).where(Like.video_id == video_id)).all())
+        return {"action": "liked", "like_count": new_count}
+
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the MathVis API. Visit /docs for Swagger interactive documentation."}
+
+if __name__ == "__main__":
+    import uvicorn
+    import os
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
