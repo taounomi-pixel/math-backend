@@ -35,10 +35,6 @@ app.add_middleware(
 # Setup OAuth2 scheme
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
 
-# Mount static files to serve uploaded videos
-os.makedirs("uploads", exist_ok=True)
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
-
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -96,7 +92,12 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), ses
         data={"sub": user.username, "id": user.id}, 
         expires_delta=access_token_expires
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {
+        "access_token": access_token, 
+        "token_type": "bearer",
+        "user_id": user.id,
+        "username": user.username
+    }
 
 async def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
     from jose import jwt, JWTError
@@ -136,37 +137,34 @@ async def upload_video(
         raise HTTPException(status_code=400, detail="Only .mp4 files are supported.")
         
     unique_filename = f"{uuid.uuid4()}_{file.filename}"
-    file_path = os.path.join("uploads", unique_filename)
     
-    
-    video_url = ""
-    if supabase:
-        # Upload to Supabase Storage
-        try:
-            # Read the file data
-            file_data = await file.read()
+    # Force Cloud Storage requirement
+    if not supabase:
+        raise HTTPException(
+            status_code=500, 
+            detail="Supabase Storage is not configured. Cloud upload is required."
+        )
+        
+    try:
+        # Read the file data
+        file_data = await file.read()
             
-            # Use supabase logic
-            supabase.storage.from_(SUPABASE_BUCKET).upload(
-                path=unique_filename,
-                file=file_data,
-                file_options={"content-type": file.content_type}
-            )
+        # Use supabase logic
+        supabase.storage.from_(SUPABASE_BUCKET).upload(
+            path=unique_filename,
+            file=file_data,
+            file_options={"content-type": file.content_type}
+        )
             
-            # Get public URL
-            video_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(unique_filename)
-            
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to upload to Supabase Storage: {str(e)}")
-    else:
-        # Fallback to local upload (for local dev or if Supabase is not configured)
-        file_path = os.path.join("uploads", unique_filename)
-        # Ensure we are at the start of the file in case read() was called
-        await file.seek(0)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        # Relative URL served by StaticFiles
-        video_url = f"/uploads/{unique_filename}"
+        # Get public URL
+        video_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(unique_filename)
+        
+        # Verify the URL is valid, fallback check (optional)
+        if not video_url:
+             raise Exception("Supabase returned an empty public URL.")
+             
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload to Supabase Storage: {str(e)}")
     
     new_video = Video(
         title=title,
@@ -197,6 +195,7 @@ def get_videos(session: Session = Depends(get_session)):
             "view_count": v.view_count,
             "upload_time": v.upload_time,
             "uploader_username": v.uploader.username,
+            "uploader_id": v.uploader_id,
             "like_count": len(v.likes)
         })
         
@@ -232,6 +231,39 @@ def toggle_like_video(
         session.commit()
         new_count = len(session.exec(select(Like).where(Like.video_id == video_id)).all())
         return {"action": "liked", "like_count": new_count}
+
+@app.delete("/api/videos/{video_id}")
+def delete_video(
+    video_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Delete a video only if the caller is the uploader.
+    """
+    video = session.get(Video, video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+        
+    if video.uploader_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this video")
+        
+    # Attempt to delete from Supabase if configured
+    if supabase:
+        try:
+            # Extract filename from URL (assumes standard Supabase public URL structure)
+            # URL format: .../storage/v1/object/public/videos/filename
+            filename = video.video_url.split('/')[-1]
+            supabase.storage.from_(SUPABASE_BUCKET).remove([filename])
+        except Exception as e:
+            # We continue even if storage delete fails, but log it
+            print(f"Failed to delete from Supabase: {e}")
+            
+    # Delete from DB
+    session.delete(video)
+    session.commit()
+    
+    return {"message": "Video deleted successfully"}
 
 @app.get("/")
 def read_root():
