@@ -127,6 +127,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: Session
 async def upload_video(
     title: str = Form(...),
     file: UploadFile = File(...),
+    source_file: Optional[UploadFile] = File(None),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session)
 ):
@@ -164,11 +165,31 @@ async def upload_video(
              raise Exception("Supabase returned an empty public URL.")
              
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to upload to Supabase Storage: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload video to Supabase: {str(e)}")
+    
+    # Optional Source Code Upload
+    manim_source_url = None
+    if source_file:
+        if not source_file.filename.endswith('.py'):
+            raise HTTPException(status_code=400, detail="Only .py files are supported for Manim source.")
+            
+        source_unique_filename = f"{uuid.uuid4()}_{source_file.filename}"
+        try:
+            source_data = await source_file.read()
+            supabase.storage.from_(SUPABASE_BUCKET).upload(
+                path=source_unique_filename,
+                file=source_data,
+                file_options={"content-type": "text/x-python"}
+            )
+            manim_source_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(source_unique_filename)
+        except Exception as e:
+            print(f"Failed to upload source file: {e}")
+            # We continue even if source upload fails, but video is uploaded
     
     new_video = Video(
         title=title,
         video_url=video_url,
+        manim_source_url=manim_source_url,
         uploader_id=current_user.id
     )
     
@@ -192,6 +213,7 @@ def get_videos(session: Session = Depends(get_session)):
             "id": v.id,
             "title": v.title,
             "video_url": v.video_url,
+            "manim_source_url": v.manim_source_url,
             "view_count": v.view_count,
             "upload_time": v.upload_time,
             "uploader_username": v.uploader.username,
