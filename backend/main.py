@@ -272,14 +272,24 @@ def delete_video(
         
     # Attempt to delete from Supabase if configured
     if supabase:
-        try:
-            # Extract filename from URL (assumes standard Supabase public URL structure)
-            # URL format: .../storage/v1/object/public/videos/filename
-            filename = video.video_url.split('/')[-1]
-            supabase.storage.from_(SUPABASE_BUCKET).remove([filename])
-        except Exception as e:
-            # We continue even if storage delete fails, but log it
-            print(f"Failed to delete from Supabase: {e}")
+        files_to_remove = []
+        
+        # Add video file to removal list
+        if video.video_url:
+            video_filename = video.video_url.split('/')[-1]
+            files_to_remove.append(video_filename)
+            
+        # Add manim source file to removal list
+        if video.manim_source_url:
+            source_filename = video.manim_source_url.split('/')[-1]
+            files_to_remove.append(source_filename)
+            
+        if files_to_remove:
+            try:
+                supabase.storage.from_(SUPABASE_BUCKET).remove(files_to_remove)
+            except Exception as e:
+                # We continue even if storage delete fails, but log it
+                print(f"Failed to delete from Supabase: {e}")
             
     # Delete from DB
     session.delete(video)
