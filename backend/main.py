@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Request
 from typing import List, Optional
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
@@ -14,6 +14,10 @@ from database import create_db_and_tables, engine
 from models import User, UserBase, Video, Like, Comment
 from auth import verify_password, get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+import filetype
 
 from contextlib import asynccontextmanager
 
@@ -39,9 +43,31 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MathVis API", lifespan=lifespan)
 
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    # Basic CSP - restrict things to same origin, vercel, etc. (Can be restrictive depending on frontend config if they use exactly same domain, but React frontend is hosted elsewhere so we just block malicious embeds and things inside API)
+    response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none';"
+    return response
+
+# Setup SlowAPI Rate Limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://www.math-vis.xin",
+        "https://math-vis.xin",
+        "https://math-frontend-wine.vercel.app",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -79,7 +105,8 @@ class UserCreate(BaseModel):
     password: str
 
 @app.post("/api/register", response_model=UserBase)
-def register_user(user_in: UserCreate, session: Session = Depends(get_session)):
+@limiter.limit("5/minute")
+def register_user(request: Request, user_in: UserCreate, session: Session = Depends(get_session)):
     existing_user = session.exec(select(User).where(User.username == user_in.username)).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="Username already registered")
@@ -93,7 +120,8 @@ def register_user(user_in: UserCreate, session: Session = Depends(get_session)):
     return new_user
 
 @app.post("/api/login")
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_session)):
+@limiter.limit("5/minute")
+def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_session)):
     user = session.exec(select(User).where(User.username == form_data.username)).first()
     if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(
@@ -171,6 +199,15 @@ async def upload_video(
         # Read the file data
         file_data = await file.read()
             
+        # 1. Size constraint (30MB limit)
+        if len(file_data) > 30 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="File too large. Maximum size allowed is 30MB.")
+        
+        # 2. Magic byte verification
+        kind = filetype.guess(file_data[:2048])
+        if kind is None or not kind.mime.startswith('video/'):
+            raise HTTPException(status_code=400, detail="Invalid file type. Only genuine videos are permitted.")
+
         # Use supabase logic
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             path=unique_filename,
@@ -201,7 +238,7 @@ async def upload_video(
             supabase.storage.from_(SUPABASE_BUCKET).upload(
                 path=source_unique_filename,
                 file=source_data,
-                file_options={"content-type": "text/plain"} # Use text/plain for better compatibility
+                file_options={"content-type": "text/plain; charset=utf-8"} # Add utf-8 charset for Python code
             )
             manim_source_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(source_unique_filename)
         except Exception as e:
@@ -262,7 +299,7 @@ def toggle_like_video(
     """
     video = session.get(Video, video_id)
     if not video:
-        raise HTTPException(status_code=44, detail="Video not found")
+        raise HTTPException(status_code=404, detail="Video not found")
         
     existing_like = session.exec(
         select(Like).where(Like.user_id == current_user.id, Like.video_id == video_id)
@@ -293,7 +330,7 @@ def delete_video(
     """
     video = session.get(Video, video_id)
     if not video:
-        raise HTTPException(status_code=44, detail=f"ID {video_id} NOT found in DB")
+        raise HTTPException(status_code=404, detail=f"ID {video_id} NOT found in DB")
         
     print(f"DEBUG: Deleting {video_id} - ReqID: {current_user.id}, OwnerID: {video.uploader_id}")
     if video.uploader_id != current_user.id:

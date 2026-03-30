@@ -2,8 +2,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import jwt
 
+import os
+
 # Security Settings
-SECRET_KEY = "SUPER_SECRET_MATHVIS_KEY_CHANGE_IN_PRODUCTION"
+SECRET_KEY = os.getenv("SECRET_KEY", "SUPER_SECRET_MATHVIS_KEY_CHANGE_IN_PRODUCTION")
+if SECRET_KEY == "SUPER_SECRET_MATHVIS_KEY_CHANGE_IN_PRODUCTION":
+    print("⚠️ WARNING: Using default insecure SECRET_KEY. Set SECRET_KEY in .env immediately for production!")
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days validity
 
