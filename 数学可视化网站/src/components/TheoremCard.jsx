@@ -49,7 +49,16 @@ const TheoremCard = ({ searchQuery = "" }) => {
         }
       });
 
-      if (!response.ok) throw new Error(t('errDeleteFail'));
+      if (!response.ok) {
+        let errorMsg = t('errDeleteFail');
+        try {
+          const errorData = await response.json();
+          if (errorData.detail) errorMsg += `: ${errorData.detail}`;
+        } catch (e) {
+          // ignore parsing error
+        }
+        throw new Error(errorMsg);
+      }
 
       // Remove from state
       setVideos(prev => prev.filter(v => v.id !== videoId));
