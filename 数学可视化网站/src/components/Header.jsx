@@ -35,25 +35,24 @@ const Header = ({ searchQuery, setSearchQuery }) => {
     return () => window.removeEventListener('resize', handleResize);
   }, [isMobileNavOpen]);
 
+  const [authLoading, setAuthLoading] = useState(false);
+
   // Auth Functions
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
     setAuthError('');
+    setAuthLoading(true);
     
     try {
       if (authModal === 'register') {
-        // Since FastAPI expects user_in as a top level payload and password as query/separate param
-        // Wait, the backend expects: @app.post("/api/register") def register_user(user_in: UserBase, password: str)
-        // Actually FastAPI uses Query params if missing model wrapper. To make it standard JSON, we must adapt to how we scaffolded it.
-        // Actually I defined it as JSON body but FastAPI splits the arguments. It's safer to hit login right after or adjust the POST body:
         const apiUrl = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000/api`;
-        const url = new URL(`${apiUrl}/register`);
-        url.searchParams.append('password', authForm.password);
-
-        const res = await fetch(url.toString(), {
+        const res = await fetch(`${apiUrl}/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: authForm.username }) // This maps to UserBase
+          body: JSON.stringify({ 
+            username: authForm.username,
+            password: authForm.password
+          })
         });
 
         if (!res.ok) {
@@ -86,7 +85,13 @@ const Header = ({ searchQuery, setSearchQuery }) => {
         setAuthForm({ username: '', password: '' });
       }
     } catch (err) {
-      setAuthError(err.message);
+      if (err.message === 'Failed to fetch' || err.message.includes('Load failed') || err.message.includes('NetworkError')) {
+        setAuthError(lang === 'zh' ? '服务器正在启动中，请等待约30秒后再试...' : 'Server is waking up, please wait ~30s and try again...');
+      } else {
+        setAuthError(err.message);
+      }
+    } finally {
+      setAuthLoading(false);
     }
   };
 
@@ -277,8 +282,8 @@ const Header = ({ searchQuery, setSearchQuery }) => {
                   style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border-color)', outline: 'none' }}
                 />
               </div>
-              <button type="submit" className="btn-primary btn-lg" style={{ marginTop: '8px', width: '100%', justifyContent: 'center' }}>
-                {authModal === 'login' ? t('continueBtn') : t('createAccountBtn')}
+              <button type="submit" className="btn-primary btn-lg" disabled={authLoading} style={{ marginTop: '8px', width: '100%', justifyContent: 'center', opacity: authLoading ? 0.7 : 1 }}>
+                {authLoading ? (lang === 'zh' ? '请稍候...' : 'Please wait...') : (authModal === 'login' ? t('continueBtn') : t('createAccountBtn'))}
               </button>
             </form>
             

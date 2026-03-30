@@ -61,13 +61,19 @@ def get_session():
 # -----------------
 # Auth Routes
 # -----------------
+from pydantic import BaseModel
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+
 @app.post("/api/register", response_model=UserBase)
-def register_user(user_in: UserBase, password: str, session: Session = Depends(get_session)):
+def register_user(user_in: UserCreate, session: Session = Depends(get_session)):
     existing_user = session.exec(select(User).where(User.username == user_in.username)).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="Username already registered")
     
-    hashed_password = get_password_hash(password)
+    hashed_password = get_password_hash(user_in.password)
     new_user = User(username=user_in.username, password_hash=hashed_password)
     
     session.add(new_user)
