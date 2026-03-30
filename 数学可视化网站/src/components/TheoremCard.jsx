@@ -42,7 +42,9 @@ const TheoremCard = ({ searchQuery = "" }) => {
     const token = localStorage.getItem('access_token');
     try {
       const apiUrl = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000/api`;
-      const response = await fetch(`${apiUrl}/videos/${videoId}`, {
+      const fullUrl = `${apiUrl}/videos/${videoId}`;
+      console.log(`[DEBUG] Attempting DELETE at: ${fullUrl}`);
+      const response = await fetch(fullUrl, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`

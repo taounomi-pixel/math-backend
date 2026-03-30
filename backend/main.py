@@ -270,11 +270,11 @@ def delete_video(
     """
     video = session.get(Video, video_id)
     if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+        raise HTTPException(status_code=404, detail=f"ID {video_id} NOT found in DB")
         
-    print(f"DEBUG: Deleting {video_id} - RequesterID: {current_user.id}, OwnerID: {video.uploader_id}")
+    print(f"DEBUG: Deleting {video_id} - ReqID: {current_user.id}, OwnerID: {video.uploader_id}")
     if video.uploader_id != current_user.id:
-        raise HTTPException(status_code=403, detail=f"Not authorized. IDs: u={current_user.id} vs o={video.uploader_id}")
+        raise HTTPException(status_code=403, detail=f"Not authorized. u={current_user.id} vs o={video.uploader_id}")
         
     # Attempt to delete from Supabase if configured
     if supabase:
