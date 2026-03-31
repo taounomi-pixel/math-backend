@@ -263,15 +263,31 @@ async def upload_video(
     return {"message": "Video uploaded successfully", "video": new_video}
 
 @app.get("/api/videos")
-def get_videos(session: Session = Depends(get_session)):
+def get_videos(request: Request, session: Session = Depends(get_session)):
     """
-    Get all uploaded videos.
+    Get all uploaded videos. If authenticated, also returns whether the current user liked each video.
     """
+    # Optional authentication
+    current_user_id = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            from jose import jwt
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            current_user_id = payload.get("id")
+        except:
+            pass # Invalid token, treat as guest
+
     videos = session.exec(select(Video).order_by(Video.upload_time.desc())).all()
     results = []
     
-    # For MVP we iterate through video records and eagerly return like count and username
     for v in videos:
+        # Check if current user has liked this video
+        is_liked = False
+        if current_user_id:
+            is_liked = any(l.user_id == current_user_id for l in v.likes)
+
         results.append({
             "id": v.id,
             "title": v.title,
@@ -284,7 +300,8 @@ def get_videos(session: Session = Depends(get_session)):
             "upload_time": v.upload_time,
             "uploader_username": v.uploader.username,
             "uploader_id": v.uploader_id,
-            "like_count": len(v.likes)
+            "like_count": len(v.likes),
+            "_liked": is_liked
         })
         
     return results
