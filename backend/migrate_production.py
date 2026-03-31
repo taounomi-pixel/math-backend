@@ -25,18 +25,18 @@ try:
     cursor.execute("""
         SELECT column_name 
         FROM information_schema.columns 
-        WHERE table_name='users' AND column_name='is_admin'
+        WHERE table_name='users' AND column_name='is_admin' AND table_schema='public'
     """)
     if not cursor.fetchone():
-        print("[INFO] Adding 'is_admin' column to 'users' table...")
-        cursor.execute("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT FALSE")
+        print("[INFO] Adding 'is_admin' column to public.users table...")
+        cursor.execute("ALTER TABLE public.users ADD COLUMN is_admin BOOLEAN DEFAULT FALSE")
         print("[SUCCESS] Column added.")
     else:
-        print("[INFO] 'is_admin' column already exists.")
+        print("[INFO] 'is_admin' column already exists in public.users.")
         
     # 2. Promote TAO to admin
-    print("[INFO] Promoting 'TAO' to admin...")
-    cursor.execute("UPDATE users SET is_admin = TRUE WHERE username = 'TAO'")
+    print("[INFO] Promoting 'TAO' to admin in public.users...")
+    cursor.execute("UPDATE public.users SET is_admin = TRUE WHERE username = 'TAO'")
     if cursor.rowcount > 0:
         print("[SUCCESS] Successfully promoted 'TAO' to admin in production.")
     else:
