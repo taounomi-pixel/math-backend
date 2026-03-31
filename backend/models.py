@@ -14,9 +14,14 @@ class UserBase(SQLModel):
 class User(UserBase, table=True):
     __tablename__ = "users"
     id: Optional[int] = Field(default=None, primary_key=True)
-    password_hash: str
+    password_hash: Optional[str] = Field(default=None)  # Nullable for OAuth-only users
     is_admin: bool = Field(default=False)
     created_at: datetime = Field(default_factory=get_utc_now)
+    
+    # Supabase Auth fields
+    supabase_uid: Optional[str] = Field(default=None, unique=True, index=True)  # Supabase auth user ID
+    email: Optional[str] = Field(default=None)  # Email from OAuth provider
+    auth_provider: Optional[str] = Field(default=None)  # 'github' | 'google' | null
 
     # Relationship Back-references
     videos: List["Video"] = Relationship(back_populates="uploader")

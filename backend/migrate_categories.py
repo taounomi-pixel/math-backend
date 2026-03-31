@@ -27,7 +27,10 @@ def add_columns():
     finally:
         conn.close()
 
+def migrate():
+    add_columns()
+
 if __name__ == "__main__":
     print("Migrating categories...")
-    add_columns()
+    migrate()
     print("Migration finished.")

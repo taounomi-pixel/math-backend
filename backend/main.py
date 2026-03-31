@@ -12,7 +12,7 @@ import shutil
 # Local imports
 from database import create_db_and_tables, engine
 from models import User, UserBase, Video, Like, Comment
-from auth import verify_password, get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM
+from auth import verify_password, get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM, verify_supabase_token
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -38,6 +38,12 @@ async def lifespan(app: FastAPI):
         migrate_tags.migrate()
     except Exception as e:
         print(f"DEBUG: Tags migration log: {e}")
+
+    try:
+        import migrate_supabase_auth
+        migrate_supabase_auth.migrate()
+    except Exception as e:
+        print(f"DEBUG: Supabase auth migration log: {e}")
         
     yield
 
@@ -45,13 +51,19 @@ app = FastAPI(title="MathVis API", lifespan=lifespan)
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
+    # Debug logging for CORS issues
+    origin = request.headers.get("origin")
+    method = request.method
+    print(f"DEBUG: Incoming request from origin: {origin}, method: {method}, path: {request.url.path}")
+    
     response = await call_next(request)
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
-    # Basic CSP - restrict things to same origin, vercel, etc. (Can be restrictive depending on frontend config if they use exactly same domain, but React frontend is hosted elsewhere so we just block malicious embeds and things inside API)
-    response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none';"
+    # Content-Security-Policy can sometimes interfere with CORS if not set carefully, 
+    # but usually it's for resource loading within the page.
+    # response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none';"
     return response
 
 # Setup SlowAPI Rate Limiter
@@ -61,13 +73,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://www.math-vis.xin",
-        "https://math-vis.xin",
-        "https://math-frontend-wine.vercel.app",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -103,6 +109,17 @@ from pydantic import BaseModel
 class UserCreate(BaseModel):
     username: str
     password: str
+
+class OAuthCompleteRegistration(BaseModel):
+    supabase_token: str
+    username: str
+    password: str
+
+class OAuthLoginRequest(BaseModel):
+    supabase_token: str
+
+class OAuthBindRequest(BaseModel):
+    supabase_token: str
 
 @app.post("/api/register", response_model=UserBase)
 @limiter.limit("5/minute")
@@ -150,18 +167,159 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: Session
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    
+    # Try old custom JWT first
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
-        if username is None:
-            raise auth_exception
+        if username:
+            user = session.exec(select(User).where(User.username == username)).first()
+            if user:
+                return user
     except JWTError:
-        raise auth_exception
-        
-    user = session.exec(select(User).where(User.username == username)).first()
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
+        pass
+    
+    # Try Supabase JWT
+    supabase_info = verify_supabase_token(token)
+    if supabase_info:
+        user = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
+        if user:
+            return user
+    
+    raise auth_exception
+
+# -----------------
+# OAuth Routes
+# -----------------
+
+@app.post("/api/auth/complete-registration")
+@limiter.limit("5/minute")
+def complete_oauth_registration(
+    request: Request,
+    data: OAuthCompleteRegistration,
+    session: Session = Depends(get_session)
+):
+    """
+    After OAuth verification, user sets username + password to complete registration.
+    Creates a local user linked to their Supabase auth account.
+    """
+    # 1. Verify the Supabase token
+    supabase_info = verify_supabase_token(data.supabase_token)
+    if not supabase_info:
+        raise HTTPException(status_code=401, detail="Invalid or expired OAuth token")
+    
+    # 2. Check if this Supabase UID is already registered
+    existing = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="This OAuth account is already linked to a user")
+    
+    # 3. Check if username is taken
+    existing_user = session.exec(select(User).where(User.username == data.username)).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Username already taken")
+    
+    # 4. Create the local user
+    hashed_password = get_password_hash(data.password)
+    new_user = User(
+        username=data.username,
+        password_hash=hashed_password,
+        supabase_uid=supabase_info["sub"],
+        email=supabase_info.get("email"),
+        auth_provider=supabase_info.get("provider", "unknown")
+    )
+    session.add(new_user)
+    session.commit()
+    session.refresh(new_user)
+    
+    # 5. Issue a local JWT token
+    access_token = create_access_token(
+        data={"sub": new_user.username, "id": new_user.id},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user_id": new_user.id,
+        "username": new_user.username,
+        "is_admin": new_user.is_admin,
+        "auth_provider": new_user.auth_provider,
+        "email": new_user.email
+    }
+
+@app.post("/api/auth/oauth-login")
+@limiter.limit("10/minute")
+def oauth_login(
+    request: Request,
+    data: OAuthLoginRequest,
+    session: Session = Depends(get_session)
+):
+    """
+    Login via Supabase OAuth token. Finds the linked local user.
+    """
+    supabase_info = verify_supabase_token(data.supabase_token)
+    if not supabase_info:
+        raise HTTPException(status_code=401, detail="Invalid or expired OAuth token")
+    
+    # Find linked local user
+    user = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
+    if not user:
+        # No linked account found - frontend should show registration form
+        return {
+            "status": "needs_registration",
+            "email": supabase_info.get("email"),
+            "provider": supabase_info.get("provider")
+        }
+    
+    # Issue local JWT
+    access_token = create_access_token(
+        data={"sub": user.username, "id": user.id},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    
+    return {
+        "status": "ok",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user_id": user.id,
+        "username": user.username,
+        "is_admin": user.is_admin,
+        "auth_provider": user.auth_provider,
+        "email": user.email
+    }
+
+@app.post("/api/auth/bind")
+def bind_oauth_account(
+    data: OAuthBindRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Bind an OAuth account to an existing user (logged in with username/password).
+    """
+    supabase_info = verify_supabase_token(data.supabase_token)
+    if not supabase_info:
+        raise HTTPException(status_code=401, detail="Invalid or expired OAuth token")
+    
+    # Check if this Supabase UID is already linked to another user
+    existing = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
+    if existing and existing.id != current_user.id:
+        raise HTTPException(status_code=400, detail="This OAuth account is already linked to another user")
+    
+    # Bind
+    current_user.supabase_uid = supabase_info["sub"]
+    current_user.email = supabase_info.get("email") or current_user.email
+    current_user.auth_provider = supabase_info.get("provider", current_user.auth_provider)
+    
+    session.add(current_user)
+    session.commit()
+    session.refresh(current_user)
+    
+    return {
+        "message": "OAuth account bound successfully",
+        "auth_provider": current_user.auth_provider,
+        "email": current_user.email
+    }
 
 # -----------------
 # Upload Routes

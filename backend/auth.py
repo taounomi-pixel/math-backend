@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from jose import jwt
+from jose import jwt, JWTError
 
 import os
 
@@ -12,6 +12,9 @@ if SECRET_KEY == "SUPER_SECRET_MATHVIS_KEY_CHANGE_IN_PRODUCTION":
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days validity
 
+# Supabase Auth Settings
+SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET", "")
+
 import bcrypt
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -20,7 +23,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def get_password_hash(password: str) -> str:
     """Generate a bcrypt hash of the password."""
-    # Salt is automatically handled by hashpw
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
@@ -32,3 +34,39 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+def verify_supabase_token(token: str) -> Optional[dict]:
+    """
+    Verify a Supabase-issued JWT and extract user info.
+    Returns dict with 'sub' (supabase uid), 'email', 'provider' or None if invalid.
+    """
+    if not SUPABASE_JWT_SECRET:
+        print("⚠️ SUPABASE_JWT_SECRET not configured")
+        return None
+    
+    try:
+        payload = jwt.decode(
+            token, 
+            SUPABASE_JWT_SECRET, 
+            algorithms=["HS256"],
+            options={"verify_aud": False}  # Supabase tokens may not have standard aud
+        )
+        
+        supabase_uid = payload.get("sub")
+        email = payload.get("email")
+        
+        # Extract provider from app_metadata
+        app_metadata = payload.get("app_metadata", {})
+        provider = app_metadata.get("provider", "email")
+        
+        if not supabase_uid:
+            return None
+            
+        return {
+            "sub": supabase_uid,
+            "email": email,
+            "provider": provider
+        }
+    except JWTError as e:
+        print(f"Supabase JWT verification failed: {e}")
+        return None
