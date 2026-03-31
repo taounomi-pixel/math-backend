@@ -15,6 +15,7 @@ class User(UserBase, table=True):
     __tablename__ = "users"
     id: Optional[int] = Field(default=None, primary_key=True)
     password_hash: str
+    is_admin: bool = Field(default=False)
     created_at: datetime = Field(default_factory=get_utc_now)
 
     # Relationship Back-references

@@ -139,7 +139,8 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
         "access_token": access_token, 
         "token_type": "bearer",
         "user_id": user.id,
-        "username": user.username
+        "username": user.username,
+        "is_admin": user.is_admin
     }
 
 async def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
@@ -332,9 +333,9 @@ def delete_video(
     if not video:
         raise HTTPException(status_code=404, detail=f"ID {video_id} NOT found in DB")
         
-    print(f"DEBUG: Deleting {video_id} - ReqID: {current_user.id}, OwnerID: {video.uploader_id}")
-    if video.uploader_id != current_user.id:
-        raise HTTPException(status_code=403, detail=f"Not authorized. u={current_user.id} vs o={video.uploader_id}")
+    print(f"DEBUG: Deleting {video_id} - ReqID: {current_user.id}, OwnerID: {video.uploader_id}, Admin: {current_user.is_admin}")
+    if video.uploader_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail=f"Not authorized. u={current_user.id} vs o={video.uploader_id} a={current_user.is_admin}")
         
     # Attempt to delete from Supabase if configured
     if supabase:
