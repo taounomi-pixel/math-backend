@@ -115,6 +115,7 @@ from pydantic import BaseModel
 class UserCreate(BaseModel):
     username: str
     password: str
+    email: Optional[str] = None # Optional email during registration
 
 class OAuthCompleteRegistration(BaseModel):
     supabase_token: str
@@ -122,6 +123,10 @@ class OAuthCompleteRegistration(BaseModel):
     password: str
 
 class OAuthLoginRequest(BaseModel):
+    supabase_token: str
+
+class OAuthVerifyRequest(BaseModel):
+    username: str
     supabase_token: str
 
 class OAuthBindRequest(BaseModel):
@@ -135,7 +140,11 @@ def register_user(request: Request, user_in: UserCreate, session: Session = Depe
         raise HTTPException(status_code=400, detail="Username already registered")
     
     hashed_password = get_password_hash(user_in.password)
-    new_user = User(username=user_in.username, password_hash=hashed_password)
+    new_user = User(
+        username=user_in.username, 
+        password_hash=hashed_password,
+        email=user_in.email  # Store email if provided
+    )
     
     session.add(new_user)
     session.commit()
@@ -152,6 +161,16 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Check if user has a bound account (Supabase UID)
+    # If yes, we require secondary verification via Supabase OAuth/Email
+    if user.supabase_uid:
+        return {
+            "status": "needs_verification",
+            "auth_provider": user.auth_provider,
+            "email": user.email,
+            "message": f"Please verify your identity using {user.auth_provider or 'your email'}."
+        }
         
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
@@ -159,11 +178,49 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
         expires_delta=access_token_expires
     )
     return {
+        "status": "ok",
         "access_token": access_token, 
         "token_type": "bearer",
         "user_id": user.id,
         "username": user.username,
         "is_admin": user.is_admin
+    }
+
+@app.post("/api/auth/verify-login")
+def verify_login_with_oauth(
+    data: OAuthVerifyRequest,
+    session: Session = Depends(get_session)
+):
+    """
+    Second step of login for bound accounts.
+    Verifies the Supabase token and matches it with the username.
+    """
+    user = session.exec(select(User).where(User.username == data.username)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not user.supabase_uid:
+        raise HTTPException(status_code=400, detail="User does not have a bound account")
+        
+    supabase_info = verify_supabase_token(data.supabase_token)
+    if not supabase_info or supabase_info["sub"] != user.supabase_uid:
+        raise HTTPException(status_code=401, detail="Identity verification failed")
+        
+    # Issue absolute JWT
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username, "id": user.id}, 
+        expires_delta=access_token_expires
+    )
+    return {
+        "status": "ok",
+        "access_token": access_token, 
+        "token_type": "bearer",
+        "user_id": user.id,
+        "username": user.username,
+        "is_admin": user.is_admin,
+        "auth_provider": user.auth_provider,
+        "email": user.email
     }
 
 async def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
