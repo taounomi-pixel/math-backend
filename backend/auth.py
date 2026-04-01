@@ -52,12 +52,20 @@ def verify_supabase_token(token: str) -> Optional[dict]:
     if token.startswith("Bearer "):
         token = token[7:]
     
+    # 🕵️ DIAGNOSTIC: Check what's actually in the header
+    try:
+        header = jwt.get_unverified_header(token)
+        print(f"🕵️ JWT Header: {header}")
+    except Exception as e:
+        print(f"❌ Could not peek at JWT header: {e}")
+
     try:
         # Standard Supabase JWT settings: HS256 and 'authenticated' audience
+        # We include common variants just in case
         payload = jwt.decode(
             token, 
             SUPABASE_JWT_SECRET, 
-            algorithms=["HS256"],
+            algorithms=["HS256", "hs256", "HS512"],
             audience="authenticated"
         )
         
