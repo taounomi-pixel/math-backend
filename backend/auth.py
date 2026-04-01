@@ -45,7 +45,7 @@ def verify_supabase_token(token: str) -> Optional[dict]:
     Returns dict with 'sub' (supabase uid), 'email', 'provider' or None if invalid.
     """
     if not SUPABASE_JWT_SECRET:
-        print("⚠️ SUPABASE_JWT_SECRET not configured in environment")
+        print("❌ ERROR: SUPABASE_JWT_SECRET not configured in environment! Verification will fail.")
         return None
     
     try:
@@ -55,7 +55,7 @@ def verify_supabase_token(token: str) -> Optional[dict]:
             SUPABASE_JWT_SECRET, 
             algorithms=["HS256"],
             options={
-                "verify_aud": False,  # Supabase tokens may have 'authenticated' or other aud
+                "verify_aud": False,
                 "verify_exp": True
             }
         )
@@ -77,5 +77,8 @@ def verify_supabase_token(token: str) -> Optional[dict]:
             "provider": provider
         }
     except JWTError as e:
-        print(f"DEBUG: Supabase JWT verification error: {type(e).__name__}: {e}")
+        print(f"❌ Supabase JWT verification error: {type(e).__name__}: {e}")
+        # Hint for common issues
+        if "Signature verification failed" in str(e):
+            print("💡 HINT: Check if your SUPABASE_JWT_SECRET matches the one in Supabase Dashboard (Settings > API).")
         return None
