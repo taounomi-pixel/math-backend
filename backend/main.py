@@ -139,7 +139,16 @@ class OAuthBindToUsernameRequest(BaseModel):
 
 @app.post("/api/register", response_model=UserBase)
 @limiter.limit("5/minute")
-def register_user(request: Request, user_in: UserCreate, session: Session = Depends(get_session)):
+def register_user(request: Request, user_in: UserCreate, session: Session = Depends(get_session), internal_secret: Optional[str] = None):
+    # Security policy: Disallow direct registration via password only.
+    # Users must use the OAuth registration flow.
+    if internal_secret != os.getenv("ADMIN_INTERNAL_SECRET"):
+        raise HTTPException(
+            status_code=400, 
+            detail="Security Policy: Direct registration is disabled. Please verify your identity via GitHub or Google to create an account."
+        )
+
+    # Existing registration logic (kept for internal use only)
     existing_user = session.exec(select(User).where(User.username == user_in.username)).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="Username already registered")
