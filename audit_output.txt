@@ -1,5 +1,0 @@
-﻿PASS: Backend alive (200)
-PASS: Register works (200)
-PASS: Login works, got token (145 chars)
-PASS: GET /api/videos (count=1)
-  VIDEO URL (cloud): https://hoqnejmcrqznkcxzcagm.supabase.co/storage/v1/object/public/Videos/4e40be91-c43b-49a4-8fac-885

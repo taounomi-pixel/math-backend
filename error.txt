@@ -1,1 +1,0 @@
-{"detail":[{"type":"missing","loc":["query","password"],"msg":"Field required","input":null}]}
