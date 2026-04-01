@@ -186,13 +186,23 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
             "message": f"Please verify your identity using {user.auth_provider or 'your email'}."
         }
     else:
-        # User is not bound - as per user request, require binding/verification 
-        # on the next login.
+        # User is not bound - allow login but suggest binding
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.username, "id": user.id}, 
+            expires_delta=access_token_expires
+        )
         return {
-            "status": "needs_binding",
+            "status": "ok",
+            "suggest_binding": True,
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user_id": user.id,
             "username": user.username,
-            "message": "Security policy requires you to bind an email to your account."
+            "is_admin": user.is_admin,
+            "message": "Login successful. Please consider binding an email to your account for better security."
         }
+
 
 @app.post("/api/auth/verify-login")
 def verify_login_with_oauth(
