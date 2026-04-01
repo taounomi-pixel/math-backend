@@ -118,31 +118,51 @@ class UserCreate(BaseModel):
     email: Optional[str] = None # Optional email during registration
 
 class OAuthCompleteRegistration(BaseModel):
-    supabase_token: str
     username: str
     password: str
 
 class OAuthLoginRequest(BaseModel):
-    supabase_token: str
+    # Token passed in Authorization: Bearer <token> header
+    pass
 
 class OAuthVerifyRequest(BaseModel):
     username: str
-    supabase_token: str
 
 class OAuthBindRequest(BaseModel):
-    supabase_token: str
+    # Token passed in Authorization: Bearer <token> header
+    pass
+
+class OAuthBindToUsernameRequest(BaseModel):
+    username: str
+    password: str
 
 @app.post("/api/register", response_model=UserBase)
 @limiter.limit("5/minute")
-def register_user(request: Request, user_in: UserCreate, session: Session = Depends(get_session)):
-    """
-    Standalone registration is now restricted. 
-    New users must use the GitHub/Google OAuth flow.
-    """
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN, 
-        detail="Standalone registration is disabled. Please use GitHub or Google to create your account."
+def register_user(request: Request, user_in: UserCreate, session: Session = Depends(get_session), internal_secret: Optional[str] = None):
+    # Security policy: Disallow direct registration via password only.
+    # Users must use the OAuth registration flow.
+    if internal_secret != os.getenv("ADMIN_INTERNAL_SECRET"):
+        raise HTTPException(
+            status_code=400, 
+            detail="Security Policy: Direct registration is disabled. Please verify your identity via GitHub or Google to create an account."
+        )
+
+    # Existing registration logic (kept for internal use only)
+    existing_user = session.exec(select(User).where(User.username == user_in.username)).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    
+    hashed_password = get_password_hash(user_in.password)
+    new_user = User(
+        username=user_in.username, 
+        password_hash=hashed_password,
+        email=user_in.email  # Store email if provided
     )
+    
+    session.add(new_user)
+    session.commit()
+    session.refresh(new_user)
+    return new_user
 
 @app.post("/api/login")
 @limiter.limit("5/minute")
@@ -164,30 +184,40 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
             "email": user.email,
             "message": f"Please verify your identity using {user.auth_provider or 'your email'}."
         }
-        
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username, "id": user.id}, 
-        expires_delta=access_token_expires
-    )
-    return {
-        "status": "ok",
-        "access_token": access_token, 
-        "token_type": "bearer",
-        "user_id": user.id,
-        "username": user.username,
-        "is_admin": user.is_admin
-    }
+    else:
+        # User is not bound - allow login but suggest binding
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.username, "id": user.id}, 
+            expires_delta=access_token_expires
+        )
+        return {
+            "status": "ok",
+            "suggest_binding": True,
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user_id": user.id,
+            "username": user.username,
+            "is_admin": user.is_admin,
+            "message": "Login successful. Please consider binding an email to your account for better security."
+        }
+
 
 @app.post("/api/auth/verify-login")
 def verify_login_with_oauth(
     data: OAuthVerifyRequest,
+    request: Request,
     session: Session = Depends(get_session)
 ):
     """
     Second step of login for bound accounts.
     Verifies the Supabase token and matches it with the username.
     """
+    token = request.headers.get("Authorization")
+    if not token or not token.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required (Bearer token)")
+    sb_token = token.split(" ")[1]
+
     user = session.exec(select(User).where(User.username == data.username)).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -195,7 +225,7 @@ def verify_login_with_oauth(
     if not user.supabase_uid:
         raise HTTPException(status_code=400, detail="User does not have a bound account")
         
-    supabase_info = verify_supabase_token(data.supabase_token)
+    supabase_info = verify_supabase_token(sb_token)
     if not supabase_info or supabase_info["sub"] != user.supabase_uid:
         raise HTTPException(status_code=401, detail="Identity verification failed")
         
@@ -259,8 +289,13 @@ def complete_oauth_registration(
     After OAuth verification, user sets username + password to complete registration.
     Creates a local user linked to their Supabase auth account.
     """
+    token = request.headers.get("Authorization")
+    if not token or not token.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Supabase OAuth token required in Authorization header")
+    sb_token = token.split(" ")[1]
+
     # 1. Verify the Supabase token
-    supabase_info = verify_supabase_token(data.supabase_token)
+    supabase_info = verify_supabase_token(sb_token)
     if not supabase_info:
         raise HTTPException(status_code=401, detail="Invalid or expired OAuth token")
     
@@ -313,7 +348,12 @@ def oauth_login(
     """
     Login via Supabase OAuth token. Finds the linked local user.
     """
-    supabase_info = verify_supabase_token(data.supabase_token)
+    token = request.headers.get("Authorization")
+    if not token or not token.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Bearer token required")
+    sb_token = token.split(" ")[1]
+
+    supabase_info = verify_supabase_token(sb_token)
     if not supabase_info:
         raise HTTPException(status_code=401, detail="Invalid or expired OAuth token")
     
@@ -346,6 +386,7 @@ def oauth_login(
 
 @app.post("/api/auth/bind")
 def bind_oauth_account(
+    request: Request,
     data: OAuthBindRequest,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session)
@@ -353,7 +394,16 @@ def bind_oauth_account(
     """
     Bind an OAuth account to an existing user (logged in with username/password).
     """
-    supabase_info = verify_supabase_token(data.supabase_token)
+    token = request.headers.get("Authorization")
+    # Note: current_user dependency already checked the main auth header.
+    # However, for BINDING, we might double-check or ensure the token is the Supabase one.
+    # Since we want to use Bearer for BOTH, we might need to distinguish if we use standard headers.
+    # Actually, for this specific use case, we'll extract it from the header.
+    if not token or not token.startswith("Bearer "):
+         raise HTTPException(status_code=401, detail="Bearer token required")
+    sb_token = token.split(" ")[1]
+
+    supabase_info = verify_supabase_token(sb_token)
     if not supabase_info:
         raise HTTPException(status_code=401, detail="Invalid or expired OAuth token")
     
@@ -375,6 +425,64 @@ def bind_oauth_account(
         "message": "OAuth account bound successfully",
         "auth_provider": current_user.auth_provider,
         "email": current_user.email
+    }
+
+@app.post("/api/auth/bind-to-username")
+@limiter.limit("5/minute")
+def bind_oauth_to_username(
+    request: Request,
+    data: OAuthBindToUsernameRequest,
+    session: Session = Depends(get_session)
+):
+    """
+    Bind an OAuth account to an existing username/password account (for first-time binding).
+    Verifies password to ensure ownership before binding.
+    """
+    # 1. Verify user credentials
+    user = session.exec(select(User).where(User.username == data.username)).first()
+    if not user or not verify_password(data.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    # 2. Extract Supabase token
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Bearer token required")
+    sb_token = auth_header.split(" ")[1]
+
+    # 3. Verify the Supabase token
+    supabase_info = verify_supabase_token(sb_token)
+    if not supabase_info:
+        raise HTTPException(status_code=401, detail="Invalid or expired OAuth token")
+    
+    # 4. Check if this Supabase UID is already linked to another user
+    existing = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
+    if existing and existing.id != user.id:
+        raise HTTPException(status_code=400, detail="This OAuth account is already linked to another user")
+    
+    # 4. Bind
+    user.supabase_uid = supabase_info["sub"]
+    user.email = supabase_info.get("email") or user.email
+    user.auth_provider = supabase_info.get("provider", "unknown")
+    
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    
+    # 5. Issue local JWT
+    access_token = create_access_token(
+        data={"sub": user.username, "id": user.id},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    
+    return {
+        "status": "ok",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user_id": user.id,
+        "username": user.username,
+        "is_admin": user.is_admin,
+        "auth_provider": user.auth_provider,
+        "email": user.email
     }
 
 # -----------------

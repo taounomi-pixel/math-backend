@@ -3,6 +3,10 @@ from typing import Optional
 from jose import jwt, JWTError
 
 import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Security Settings
 SECRET_KEY = os.getenv("SECRET_KEY", "SUPER_SECRET_MATHVIS_KEY_CHANGE_IN_PRODUCTION")
@@ -41,15 +45,15 @@ def verify_supabase_token(token: str) -> Optional[dict]:
     Returns dict with 'sub' (supabase uid), 'email', 'provider' or None if invalid.
     """
     if not SUPABASE_JWT_SECRET:
-        print("⚠️ SUPABASE_JWT_SECRET not configured")
+        print("❌ ERROR: SUPABASE_JWT_SECRET not configured in environment! Verification will fail.")
         return None
     
-    # Strip 'Bearer ' if present
+    # Strip 'Bearer ' if present to improve robustness
     if token.startswith("Bearer "):
         token = token[7:]
     
     try:
-        # Standard Supabase JWT settings: HS256 algorithm and 'authenticated' audience
+        # Standard Supabase JWT settings: HS256 and 'authenticated' audience
         payload = jwt.decode(
             token, 
             SUPABASE_JWT_SECRET, 
@@ -65,6 +69,7 @@ def verify_supabase_token(token: str) -> Optional[dict]:
         provider = app_metadata.get("provider", "email")
         
         if not supabase_uid:
+            print("⚠️ Supabase JWT missing 'sub' claim")
             return None
             
         return {
@@ -73,11 +78,11 @@ def verify_supabase_token(token: str) -> Optional[dict]:
             "provider": provider
         }
     except jwt.ExpiredSignatureError:
-        print("❌ Supabase JWT verification failed: Token expired")
+        print("❌ Supabase JWT verification error: Token expired")
         return None
     except jwt.JWTClaimsError as e:
-        print(f"❌ Supabase JWT verification failed: Claims error (Check Audience) - {e}")
+        print(f"❌ Supabase JWT verification error: Claims/Audience error - {e}")
         return None
     except JWTError as e:
-        print(f"❌ Supabase JWT verification failed: Signature or other Error - {e}")
+        print(f"❌ Supabase JWT verification error: {type(e).__name__}: {e}")
         return None
