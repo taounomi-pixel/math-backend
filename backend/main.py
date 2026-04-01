@@ -132,6 +132,11 @@ class OAuthVerifyRequest(BaseModel):
 class OAuthBindRequest(BaseModel):
     supabase_token: str
 
+class OAuthBindToUsernameRequest(BaseModel):
+    supabase_token: str
+    username: str
+    password: str
+
 @app.post("/api/register", response_model=UserBase)
 @limiter.limit("5/minute")
 def register_user(request: Request, user_in: UserCreate, session: Session = Depends(get_session)):
@@ -171,20 +176,14 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
             "email": user.email,
             "message": f"Please verify your identity using {user.auth_provider or 'your email'}."
         }
-        
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username, "id": user.id}, 
-        expires_delta=access_token_expires
-    )
-    return {
-        "status": "ok",
-        "access_token": access_token, 
-        "token_type": "bearer",
-        "user_id": user.id,
-        "username": user.username,
-        "is_admin": user.is_admin
-    }
+    else:
+        # User is not bound - as per user request, require binding/verification 
+        # on the next login.
+        return {
+            "status": "needs_binding",
+            "username": user.username,
+            "message": "Security policy requires you to bind an email to your account."
+        }
 
 @app.post("/api/auth/verify-login")
 def verify_login_with_oauth(
@@ -382,6 +381,58 @@ def bind_oauth_account(
         "message": "OAuth account bound successfully",
         "auth_provider": current_user.auth_provider,
         "email": current_user.email
+    }
+
+@app.post("/api/auth/bind-to-username")
+@limiter.limit("5/minute")
+def bind_oauth_to_username(
+    request: Request,
+    data: OAuthBindToUsernameRequest,
+    session: Session = Depends(get_session)
+):
+    """
+    Bind an OAuth account to an existing username/password account (for first-time binding).
+    Verifies password to ensure ownership before binding.
+    """
+    # 1. Verify user credentials
+    user = session.exec(select(User).where(User.username == data.username)).first()
+    if not user or not verify_password(data.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    # 2. Verify the Supabase token
+    supabase_info = verify_supabase_token(data.supabase_token)
+    if not supabase_info:
+        raise HTTPException(status_code=401, detail="Invalid or expired OAuth token")
+    
+    # 3. Check if this Supabase UID is already linked to another user
+    existing = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
+    if existing and existing.id != user.id:
+        raise HTTPException(status_code=400, detail="This OAuth account is already linked to another user")
+    
+    # 4. Bind
+    user.supabase_uid = supabase_info["sub"]
+    user.email = supabase_info.get("email") or user.email
+    user.auth_provider = supabase_info.get("provider", "unknown")
+    
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    
+    # 5. Issue local JWT
+    access_token = create_access_token(
+        data={"sub": user.username, "id": user.id},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    
+    return {
+        "status": "ok",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user_id": user.id,
+        "username": user.username,
+        "is_admin": user.is_admin,
+        "auth_provider": user.auth_provider,
+        "email": user.email
     }
 
 # -----------------

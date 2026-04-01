@@ -3,6 +3,10 @@ from typing import Optional
 from jose import jwt, JWTError
 
 import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Security Settings
 SECRET_KEY = os.getenv("SECRET_KEY", "SUPER_SECRET_MATHVIS_KEY_CHANGE_IN_PRODUCTION")
@@ -41,15 +45,19 @@ def verify_supabase_token(token: str) -> Optional[dict]:
     Returns dict with 'sub' (supabase uid), 'email', 'provider' or None if invalid.
     """
     if not SUPABASE_JWT_SECRET:
-        print("⚠️ SUPABASE_JWT_SECRET not configured")
+        print("⚠️ SUPABASE_JWT_SECRET not configured in environment")
         return None
     
     try:
+        # Supabase uses HS256 with the JWT Secret
         payload = jwt.decode(
             token, 
             SUPABASE_JWT_SECRET, 
             algorithms=["HS256"],
-            options={"verify_aud": False}  # Supabase tokens may not have standard aud
+            options={
+                "verify_aud": False,  # Supabase tokens may have 'authenticated' or other aud
+                "verify_exp": True
+            }
         )
         
         supabase_uid = payload.get("sub")
@@ -60,6 +68,7 @@ def verify_supabase_token(token: str) -> Optional[dict]:
         provider = app_metadata.get("provider", "email")
         
         if not supabase_uid:
+            print("⚠️ Supabase JWT missing 'sub' claim")
             return None
             
         return {
@@ -68,5 +77,5 @@ def verify_supabase_token(token: str) -> Optional[dict]:
             "provider": provider
         }
     except JWTError as e:
-        print(f"Supabase JWT verification failed: {e}")
+        print(f"DEBUG: Supabase JWT verification error: {type(e).__name__}: {e}")
         return None
