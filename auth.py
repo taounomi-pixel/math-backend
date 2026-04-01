@@ -44,12 +44,17 @@ def verify_supabase_token(token: str) -> Optional[dict]:
         print("⚠️ SUPABASE_JWT_SECRET not configured")
         return None
     
+    # Strip 'Bearer ' if present
+    if token.startswith("Bearer "):
+        token = token[7:]
+    
     try:
+        # Standard Supabase JWT settings: HS256 algorithm and 'authenticated' audience
         payload = jwt.decode(
             token, 
             SUPABASE_JWT_SECRET, 
             algorithms=["HS256"],
-            options={"verify_aud": False}  # Supabase tokens may not have standard aud
+            audience="authenticated"
         )
         
         supabase_uid = payload.get("sub")
@@ -67,6 +72,12 @@ def verify_supabase_token(token: str) -> Optional[dict]:
             "email": email,
             "provider": provider
         }
+    except jwt.ExpiredSignatureError:
+        print("❌ Supabase JWT verification failed: Token expired")
+        return None
+    except jwt.JWTClaimsError as e:
+        print(f"❌ Supabase JWT verification failed: Claims error (Check Audience) - {e}")
+        return None
     except JWTError as e:
-        print(f"Supabase JWT verification failed: {e}")
+        print(f"❌ Supabase JWT verification failed: Signature or other Error - {e}")
         return None

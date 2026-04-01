@@ -135,21 +135,14 @@ class OAuthBindRequest(BaseModel):
 @app.post("/api/register", response_model=UserBase)
 @limiter.limit("5/minute")
 def register_user(request: Request, user_in: UserCreate, session: Session = Depends(get_session)):
-    existing_user = session.exec(select(User).where(User.username == user_in.username)).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-    
-    hashed_password = get_password_hash(user_in.password)
-    new_user = User(
-        username=user_in.username, 
-        password_hash=hashed_password,
-        email=user_in.email  # Store email if provided
+    """
+    Standalone registration is now restricted. 
+    New users must use the GitHub/Google OAuth flow.
+    """
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, 
+        detail="Standalone registration is disabled. Please use GitHub or Google to create your account."
     )
-    
-    session.add(new_user)
-    session.commit()
-    session.refresh(new_user)
-    return new_user
 
 @app.post("/api/login")
 @limiter.limit("5/minute")
