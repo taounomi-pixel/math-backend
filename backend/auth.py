@@ -59,13 +59,12 @@ def verify_supabase_token(token: str) -> Optional[dict]:
     except Exception as e:
         print(f"❌ Could not peek at JWT header: {e}")
 
-    try:
         # Standard Supabase JWT settings: HS256 and 'authenticated' audience
-        # We include common variants just in case
+        # We discovered ES256 is being used in this project via diagnostics
         payload = jwt.decode(
             token, 
             SUPABASE_JWT_SECRET, 
-            algorithms=["HS256", "hs256", "HS512"],
+            algorithms=["HS256", "hs256", "ES256", "RS256"],
             audience="authenticated"
         )
         
