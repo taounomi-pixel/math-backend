@@ -220,6 +220,7 @@ def verify_login_with_oauth(
         
     supabase_info = verify_supabase_token(sb_token)
     if not supabase_info or supabase_info["sub"] != user.supabase_uid:
+        print(f"DEBUG: Identity match failed for user '{user.username}'. DB UID: {user.supabase_uid}, Token SUB: {supabase_info.get('sub') if supabase_info else 'None'}")
         raise HTTPException(status_code=401, detail="Identity verification failed")
         
     # Issue absolute JWT
