@@ -16,8 +16,8 @@ if SECRET_KEY == "SUPER_SECRET_MATHVIS_KEY_CHANGE_IN_PRODUCTION":
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days validity
 
-# Supabase Auth Settings
-SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET", "")
+# Supabase Auth Settings - Fully handled by SDK
+# No longer using manual JWT decode for Supabase tokens.
 
 import bcrypt
 
@@ -41,55 +41,36 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 
 def verify_supabase_token(token: str) -> Optional[dict]:
     """
-    Verify a Supabase-issued JWT and extract user info.
+    Verify a Supabase-issued JWT by calling the Supabase Auth API.
+    This automatically handles ES256, HS256, and all other signature algorithms correctly.
     Returns dict with 'sub' (supabase uid), 'email', 'provider' or None if invalid.
     """
-    if not SUPABASE_JWT_SECRET:
-        print("❌ ERROR: SUPABASE_JWT_SECRET not configured in environment! Verification will fail.")
+    from database import supabase
+    
+    if not supabase:
+        print("❌ ERROR: Supabase client not initialized in database.py!")
         return None
     
-    # Strip 'Bearer ' if present to improve robustness
+    # Strip 'Bearer ' if present
     if token.startswith("Bearer "):
         token = token[7:]
     
-    # 🕵️ DIAGNOSTIC: Check what's actually in the header
     try:
-        header = jwt.get_unverified_header(token)
-        print(f"🕵️ JWT Header: {header}")
-    except Exception as e:
-        print(f"❌ Could not peek at JWT header: {e}")
-
-        # Standard Supabase JWT settings: HS256 and 'authenticated' audience
-        # We discovered ES256 is being used in this project via diagnostics
-        payload = jwt.decode(
-            token, 
-            SUPABASE_JWT_SECRET, 
-            algorithms=["HS256", "hs256", "ES256", "RS256"],
-            audience="authenticated"
-        )
+        # SDK get_user(token) validates the token with Supabase and returns the user object
+        user_response = supabase.auth.get_user(token)
+        user = user_response.user
         
-        supabase_uid = payload.get("sub")
-        email = payload.get("email")
-        
-        # Extract provider from app_metadata
-        app_metadata = payload.get("app_metadata", {})
-        provider = app_metadata.get("provider", "email")
-        
-        if not supabase_uid:
-            print("⚠️ Supabase JWT missing 'sub' claim")
+        if not user:
+            print("⚠️ Supabase: Token valid but no user found in response.")
             return None
             
+        # Return equivalent structure to the previous decoded payload for compatibility
         return {
-            "sub": supabase_uid,
-            "email": email,
-            "provider": provider
+            "sub": user.id,
+            "email": user.email,
+            "provider": user.app_metadata.get("provider", "email")
         }
-    except jwt.ExpiredSignatureError:
-        print("❌ Supabase JWT verification error: Token expired")
-        return None
-    except jwt.JWTClaimsError as e:
-        print(f"❌ Supabase JWT verification error: Claims/Audience error - {e}")
-        return None
-    except JWTError as e:
-        print(f"❌ Supabase JWT verification error: {type(e).__name__}: {e}")
+    except Exception as e:
+        # Log the error for Render monitoring, but fail gracefully for the user
+        print(f"❌ Supabase SDK Verification Failed: {e}")
         return None

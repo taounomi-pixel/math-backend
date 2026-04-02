@@ -10,7 +10,7 @@ import os
 import shutil
 
 # Local imports
-from database import create_db_and_tables, engine
+from database import create_db_and_tables, engine, supabase, SUPABASE_BUCKET
 from models import User, UserBase, Video, Like, Comment
 from auth import verify_password, get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM, verify_supabase_token
 from fastapi.middleware.cors import CORSMiddleware
@@ -88,20 +88,7 @@ app.add_middleware(
 # Setup OAuth2 scheme
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
 
-from dotenv import load_dotenv
-from supabase import create_client, Client
-
-# Load environment variables
-load_dotenv()
-
-# Setup Supabase
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET_NAME", "videos")
-
-supabase: Client = None
-if SUPABASE_URL and SUPABASE_KEY:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Supabase is now initialized in database.py
 
 def get_session():
     with Session(engine) as session:
