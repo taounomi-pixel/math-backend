@@ -12,9 +12,7 @@ def get_utc_now():
 class UserBase(SQLModel):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(index=True, unique=True)
-    email: Optional[str] = Field(default=None)
     is_admin: bool = Field(default=False)
-    auth_provider: Optional[str] = Field(default=None)
 
 class UserRead(UserBase):
     identities: List[str] = [] # Virtual field for responses
@@ -25,16 +23,8 @@ class User(UserBase, table=True):
     created_at: datetime = Field(
         sa_column=Column(DateTime(timezone=True), default=get_utc_now)
     )
-    last_login_at: Optional[datetime] = Field(
-        sa_column=Column(DateTime(timezone=True), nullable=True)
-    )
-    updated_at: datetime = Field(
-        sa_column=Column(DateTime(timezone=True), default=get_utc_now, onupdate=get_utc_now)
-    )
-    
-    # Supabase Auth fields
-    supabase_uid: Optional[str] = Field(default=None, unique=True, index=True)  # Supabase auth user ID
-    identities_json: Optional[str] = Field(default="[]")  # JSON list of providers
+    # Supabase Auth user ID
+    supabase_uid: Optional[str] = Field(default=None, unique=True, index=True)
 
     # Relationship Back-references
     videos: List["Video"] = Relationship(back_populates="uploader")

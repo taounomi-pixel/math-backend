@@ -47,12 +47,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"DEBUG: Supabase auth migration log: {e}")
     
-    try:
-        import migrate_user_fields
-        migrate_user_fields.migrate()
-    except Exception as e:
-        print(f"DEBUG: User fields migration log: {e}")
-        
     yield
 
 app = FastAPI(title="MathVis API", lifespan=lifespan)
@@ -110,7 +104,6 @@ from pydantic import BaseModel
 class UserCreate(BaseModel):
     username: str
     password: str
-    email: Optional[str] = None # Optional email during registration
 
 class OAuthCompleteRegistration(BaseModel):
     username: str
@@ -132,18 +125,12 @@ class OAuthBindToUsernameRequest(BaseModel):
     supabase_token: str
 
 def get_user_identities(user: User) -> List[str]:
-    """Helper to consistently get list of provider names from identities_json."""
-    if not user.identities_json:
-        return []
-    try:
-        data = json.loads(user.identities_json)
-        if isinstance(data, dict):
-            return list(data.keys())
-        if isinstance(data, list):
-            return data
-        return []
-    except:
-        return []
+    """Helper to consistently get list of provider names."""
+    # Since we removed identities_json, we just return a placeholder 
+    # to signify the account is bound to Supabase.
+    if user.supabase_uid:
+        return ["bound"]
+    return []
 
 @app.post("/api/register", response_model=UserRead)
 @limiter.limit("5/minute")
@@ -164,9 +151,7 @@ def register_user(request: Request, user_in: UserCreate, session: Session = Depe
     hashed_password = get_password_hash(user_in.password)
     new_user = User(
         username=user_in.username, 
-        password_hash=hashed_password,
-        email=user_in.email,  # Store email if provided
-        identities_json="{}" # Initialize as empty dict
+        password_hash=hashed_password
     )
     
     session.add(new_user)
@@ -189,28 +174,17 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
         )
 
     # Check if user has a bound account (Supabase UID)
-    # If yes, we require secondary verification via Supabase OAuth/Email
     if user.supabase_uid:
-        # Get list of linked providers from identities_json
-        providers = get_user_identities(user)
-            
-        # Fallback to single auth_provider if list is empty
-        if not providers and user.auth_provider:
-            providers = [user.auth_provider]
-            
         # Raise 403 to trigger "Verification Mode" in frontend
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
                 "error": "oauth_verification_required",
-                "providers": providers,
-                "email": user.email,
-                "message": f"Security Policy: MFA required. Please verify your identity via: {', '.join(providers)}."
+                "message": "Security Policy: MFA required. Please verify your identity via GitHub or Google."
             }
         )
     
     # Standard password-only login (unbound account)
-    user.last_login_at = get_utc_now()
     session.add(user)
     session.commit()
     
@@ -221,16 +195,14 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
     )
     return {
         "status": "ok",
-            "suggest_binding": True,
-            "access_token": access_token,
-            "token_type": "bearer",
-            "user_id": user.id,
-            "username": user.username,
-            "is_admin": user.is_admin,
-            "auth_provider": user.auth_provider,
-            "identities": get_user_identities(user),
-            "message": "Login successful."
-        }
+        "suggest_binding": True,
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user_id": user.id,
+        "username": user.username,
+        "is_admin": user.is_admin,
+        "message": "Login successful."
+    }
 
 
 @app.post("/api/auth/verify-login")
@@ -276,25 +248,9 @@ def verify_login_with_oauth(
     except:
         p_data = {}
 
-    if supabase_info["sub"] == user.supabase_uid or supabase_info["sub"] in p_data.values():
+    if supabase_info["sub"] == user.supabase_uid:
         is_verified = True
-    elif supabase_info.get("email") == user.email and user.email:
-        # Email match fallback: user is logging in with a different linked provider 
-        # or the UID has changed in Supabase.
-        print(f"DEBUG: UID mismatch for '{user.username}', but EMAIL match ({user.email}). Auto-healing UID.")
-        user.supabase_uid = supabase_info["sub"]
-        
-        # Link this new provider/UID
-        new_provider = supabase_info.get("provider", "email")
-        p_data[new_provider] = supabase_info["sub"]
-        user.identities_json = json.dumps(p_data)
-        user.supabase_uid = supabase_info["sub"] # Update last used
-        
-        session.add(user)
-        session.commit()
-        is_verified = True
-    
-    if not is_verified:
+    else:
         print(f"DEBUG: Identity match failed for user '{user.username}'. DB UID: {user.supabase_uid}, Token SUB: {supabase_info.get('sub')}")
         raise HTTPException(status_code=401, detail="Identity verification failed. Please use your linked account.")
         
@@ -304,15 +260,6 @@ def verify_login_with_oauth(
         data={"sub": user.username, "id": user.id}, 
         expires_delta=access_token_expires
     )
-    # Prepare identities for frontend (list of names)
-    try:
-        identities_raw = json.loads(user.identities_json or "{}")
-        if isinstance(identities_raw, list):
-            identities_list = identities_raw
-        else:
-            identities_list = list(identities_raw.keys())
-    except:
-        identities_list = []
 
     return {
         "status": "ok",
@@ -321,9 +268,7 @@ def verify_login_with_oauth(
         "user_id": user.id,
         "username": user.username,
         "is_admin": user.is_admin,
-        "auth_provider": user.auth_provider,
-        "identities": get_user_identities(user),
-        "email": user.email
+        "identities": get_user_identities(user)
     }
 
 async def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
@@ -396,10 +341,7 @@ def complete_oauth_registration(
     new_user = User(
         username=data.username,
         password_hash=hashed_password,
-        supabase_uid=supabase_info["sub"],
-        email=supabase_info.get("email"),
-        auth_provider=supabase_info.get("provider", "unknown"),
-        identities_json=json.dumps({supabase_info.get("provider", "unknown"): supabase_info["sub"]})
+        supabase_uid=supabase_info["sub"]
     )
     session.add(new_user)
     session.commit()
@@ -418,9 +360,7 @@ def complete_oauth_registration(
         "user_id": new_user.id,
         "username": new_user.username,
         "is_admin": new_user.is_admin,
-        "auth_provider": new_user.auth_provider,
-        "identities": get_user_identities(new_user),
-        "email": new_user.email
+        "identities": get_user_identities(new_user)
     }
 
 @app.post("/api/auth/oauth-login")
@@ -447,25 +387,13 @@ def oauth_login(
     if not supabase_info:
         raise HTTPException(status_code=401, detail="Invalid or expired OAuth token")
     
-    # Find linked local user by ANY bound identity
+    # Find linked local user
     user = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
-    if not user:
-        # Slow search fallback for JSON field if not found by main UID
-        all_users = session.exec(select(User)).all()
-        for u in all_users:
-            try:
-                p_data = json.loads(u.identities_json or "{}")
-                if isinstance(p_data, dict) and supabase_info["sub"] in p_data.values():
-                    user = u
-                    break
-            except:
-                continue
 
     if not user:
         # No linked account found - frontend should show registration form
         return {
             "status": "needs_registration",
-            "email": supabase_info.get("email"),
             "provider": supabase_info.get("provider")
         }
     
@@ -482,9 +410,7 @@ def oauth_login(
         "user_id": user.id,
         "username": user.username,
         "is_admin": user.is_admin,
-        "auth_provider": user.auth_provider,
-        "identities": get_user_identities(user),
-        "email": user.email
+        "identities": get_user_identities(user)
     }
 
 @app.post("/api/auth/bind")
@@ -523,12 +449,7 @@ def bind_oauth_account(
     except:
         p_data = {}
     
-    p_data[new_provider] = supabase_info["sub"]
-    current_user.identities_json = json.dumps(p_data)
-
     current_user.supabase_uid = supabase_info["sub"] # Last used UID
-    current_user.email = supabase_info.get("email") or current_user.email
-    current_user.auth_provider = new_provider
     
     session.add(current_user)
     session.commit()
@@ -540,9 +461,7 @@ def bind_oauth_account(
         "user_id": current_user.id,
         "username": current_user.username,
         "is_admin": current_user.is_admin,
-        "auth_provider": current_user.auth_provider,
-        "identities": get_user_identities(current_user),
-        "email": current_user.email
+        "identities": get_user_identities(current_user)
     }
 
 @app.post("/api/auth/unbind")
@@ -554,47 +473,19 @@ def unbind_oauth_account(
     """
     Remove an OAuth binding from the current user.
     """
-    provider = data.get("provider")
-    if not provider:
-        raise HTTPException(status_code=400, detail="Provider name required")
-        
-    try:
-        p_data = json.loads(current_user.identities_json or "{}")
-        if isinstance(p_data, list):
-            # Migration: if it's a list, we don't have the UID mapping, 
-            # but we can still remove the provider name.
-            p_data = {p: current_user.supabase_uid for p in p_data}
-    except:
-        p_data = {}
-        
-    if provider in p_data:
-        del p_data[provider]
-        current_user.identities_json = json.dumps(p_data)
-        
-        # If the unbound provider was the current primary provider, pick another one
-        if current_user.auth_provider == provider:
-            if p_data:
-                # Pick the first remaining provider
-                first_p = list(p_data.keys())[0]
-                current_user.auth_provider = first_p
-                current_user.supabase_uid = p_data[first_p]
-            else:
-                current_user.auth_provider = None
-                current_user.supabase_uid = None
-
+    if current_user.supabase_uid:
+        current_user.supabase_uid = None
         session.add(current_user)
         session.commit()
         session.refresh(current_user)
     
     return {
         "status": "ok",
-        "message": f"Successfully unbound {provider}",
+        "message": f"Successfully unbound OAuth",
         "user_id": current_user.id,
         "username": current_user.username,
         "is_admin": current_user.is_admin,
-        "auth_provider": current_user.auth_provider,
-        "identities": get_user_identities(current_user),
-        "email": current_user.email
+        "identities": get_user_identities(current_user)
     }
 
 @app.post("/api/auth/force-unbind")
@@ -623,10 +514,6 @@ def force_unbind_account(
     # 2. Local Cleanup
     user = current_user # Alias for clarity if needed
     user.supabase_uid = None
-    user.identities_json = "{}"
-    user.auth_provider = None
-    user.last_login_at = None 
-    user.updated_at = get_utc_now()
     
     session.add(user)
     session.commit()
@@ -676,28 +563,11 @@ def bind_oauth_to_username(
         raise HTTPException(status_code=400, detail="This OAuth account is already linked to another user")
     
     # 4. Bind
-    new_provider = supabase_info.get("provider", "unknown")
-    try:
-        p_data = json.loads(user.identities_json or "{}")
-        if isinstance(p_data, list):
-            p_data = {p: user.supabase_uid for p in p_data}
-    except:
-        p_data = {}
-        
-    p_data[new_provider] = supabase_info["sub"]
-    user.identities_json = json.dumps(p_data)
     user.supabase_uid = supabase_info["sub"]
-    user.email = supabase_info.get("email") or user.email
-    user.auth_provider = new_provider
     
     session.add(user)
     session.commit()
     session.refresh(user)
-    
-    # 5. Issue local JWT
-    user.last_login_at = get_utc_now()
-    session.add(user)
-    session.commit()
     
     access_token = create_access_token(
         data={"sub": user.username, "id": user.id},
@@ -711,9 +581,7 @@ def bind_oauth_to_username(
         "user_id": user.id,
         "username": user.username,
         "is_admin": user.is_admin,
-        "auth_provider": user.auth_provider,
-        "identities": get_user_identities(user),
-        "email": user.email
+        "identities": get_user_identities(user)
     }
 
 # -----------------
