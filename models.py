@@ -25,6 +25,12 @@ class User(UserBase, table=True):
     created_at: datetime = Field(
         sa_column=Column(DateTime(timezone=True), default=get_utc_now)
     )
+    last_login_at: Optional[datetime] = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    updated_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), default=get_utc_now, onupdate=get_utc_now)
+    )
     
     # Supabase Auth fields
     supabase_uid: Optional[str] = Field(default=None, unique=True, index=True)  # Supabase auth user ID

@@ -11,7 +11,7 @@ import os
 import shutil
 
 # Local imports
-from database import create_db_and_tables, engine, supabase, SUPABASE_BUCKET
+from database import create_db_and_tables, engine, supabase, supabase_admin, SUPABASE_BUCKET
 from models import User, UserBase, UserRead, Video, Like, Comment
 from auth import verify_password, get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM, verify_supabase_token
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,6 +46,12 @@ async def lifespan(app: FastAPI):
         migrate_supabase_auth.migrate()
     except Exception as e:
         print(f"DEBUG: Supabase auth migration log: {e}")
+    
+    try:
+        import migrate_user_fields
+        migrate_user_fields.migrate()
+    except Exception as e:
+        print(f"DEBUG: User fields migration log: {e}")
         
     yield
 
@@ -192,22 +198,29 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
         if not providers and user.auth_provider:
             providers = [user.auth_provider]
             
-        return {
-            "status": "needs_verification",
-            "auth_provider": providers[0] if providers else user.auth_provider,
-            "identities": providers,
-            "email": user.email,
-            "message": f"Please verify your identity using one of your linked accounts: {', '.join(providers)}."
-        }
-    else:
-        # User is not bound - allow login but suggest binding
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token = create_access_token(
-            data={"sub": user.username, "id": user.id}, 
-            expires_delta=access_token_expires
+        # Raise 403 to trigger "Verification Mode" in frontend
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "oauth_verification_required",
+                "providers": providers,
+                "email": user.email,
+                "message": f"Security Policy: MFA required. Please verify your identity via: {', '.join(providers)}."
+            }
         )
-        return {
-            "status": "ok",
+    
+    # Standard password-only login (unbound account)
+    user.last_login_at = get_utc_now()
+    session.add(user)
+    session.commit()
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username, "id": user.id}, 
+        expires_delta=access_token_expires
+    )
+    return {
+        "status": "ok",
             "suggest_binding": True,
             "access_token": access_token,
             "token_type": "bearer",
@@ -584,6 +597,47 @@ def unbind_oauth_account(
         "email": current_user.email
     }
 
+@app.post("/api/auth/force-unbind")
+def force_unbind_account(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """
+    CRITICAL: Completely remove ALL OAuth bindings and DELETE the Supabase user.
+    This is used when a user wants to "reset" their account to password-only 
+    or unbind the very last identity.
+    """
+    if not current_user.supabase_uid:
+        raise HTTPException(status_code=400, detail="No bound Supabase account found")
+
+    # 1. Delete from Supabase Auth using Admin Client
+    if supabase_admin:
+        try:
+            # delete_user is an admin operation
+            supabase_admin.auth.admin.delete_user(current_user.supabase_uid)
+            print(f"DEBUG: Successfully deleted Supabase user {current_user.supabase_uid}")
+        except Exception as e:
+            print(f"ERROR: Failed to delete Supabase user: {e}")
+            # If the user is already gone from Supabase, we continue with local cleanup
+    
+    # 2. Local Cleanup
+    user = current_user # Alias for clarity if needed
+    user.supabase_uid = None
+    user.identities_json = "{}"
+    user.auth_provider = None
+    user.last_login_at = None 
+    user.updated_at = get_utc_now()
+    
+    session.add(user)
+    session.commit()
+    session.refresh(current_user)
+    
+    return {
+        "status": "ok",
+        "message": "Account successfully unbound and Supabase identity deleted. Session termination required.",
+        "user_id": current_user.id
+    }
+
 @app.post("/api/auth/bind-to-username")
 @limiter.limit("5/minute")
 def bind_oauth_to_username(
@@ -641,6 +695,10 @@ def bind_oauth_to_username(
     session.refresh(user)
     
     # 5. Issue local JWT
+    user.last_login_at = get_utc_now()
+    session.add(user)
+    session.commit()
+    
     access_token = create_access_token(
         data={"sub": user.username, "id": user.id},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
