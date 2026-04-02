@@ -255,18 +255,22 @@ def verify_login_with_oauth(
     
     # Step 3: Find user by token if username was missing
     if not user:
-        user = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
+        user = session.exec(select(User).where(User.supabase_uid == str(supabase_info["sub"]))).first()
         if not user:
             raise HTTPException(status_code=404, detail="No local account linked to this OAuth identity")
 
     # Step 4: Validate match
     if not user.supabase_uid:
-        # Auto-bind if they just verified but didn't have it set? 
-        # Actually in MFA flow, it SHOULD already be set.
+        print(f"DEBUG: verify-login: User '{user.username}' has no supabase_uid bound. Cannot verify.")
         raise HTTPException(status_code=400, detail="User does not have a bound account")
-        
-    if supabase_info["sub"] != user.supabase_uid:
-        print(f"DEBUG: Identity match failed for user '{user.username}'. DB UID: {user.supabase_uid}, Token SUB: {supabase_info.get('sub')}")
+    
+    # CRITICAL: Force str() on both sides to prevent UUID object vs string mismatch
+    db_uid = str(user.supabase_uid)
+    token_uid = str(supabase_info["sub"])
+    print(f"DEBUG: verify-login: Comparing DB UID='{db_uid}' (type={type(user.supabase_uid).__name__}) vs Token SUB='{token_uid}' (type={type(supabase_info['sub']).__name__})")
+    
+    if token_uid != db_uid:
+        print(f"DEBUG: Identity match FAILED for user '{user.username}'. DB UID: {db_uid}, Token SUB: {token_uid}")
         raise HTTPException(status_code=401, detail="Identity verification failed. Please use your correctly linked account.")
         
     # Issue absolute JWT
@@ -386,7 +390,7 @@ def complete_oauth_registration(
         raise HTTPException(status_code=401, detail="Invalid or expired OAuth token")
     
     # 2. Check if this Supabase UID is already registered
-    existing = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
+    existing = session.exec(select(User).where(User.supabase_uid == str(supabase_info["sub"]))).first()
     if existing:
         raise HTTPException(status_code=400, detail="This OAuth account is already linked to a user")
     
@@ -400,7 +404,7 @@ def complete_oauth_registration(
     new_user = User(
         username=data.username,
         password_hash=hashed_password,
-        supabase_uid=supabase_info["sub"]
+        supabase_uid=str(supabase_info["sub"])
     )
     session.add(new_user)
     session.commit()
@@ -447,7 +451,7 @@ def oauth_login(
         raise HTTPException(status_code=401, detail="Invalid or expired OAuth token")
     
     # Find linked local user
-    user = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
+    user = session.exec(select(User).where(User.supabase_uid == str(supabase_info["sub"]))).first()
 
     if not user:
         # No linked account found - frontend should show registration form
@@ -495,7 +499,8 @@ def bind_oauth_account(
         raise HTTPException(status_code=401, detail="OAuth Binding Failed: the provided Supabase token is invalid or expired.")
     
     # Check if this Supabase UID is already linked to another user
-    existing = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
+    token_uid = str(supabase_info["sub"])
+    existing = session.exec(select(User).where(User.supabase_uid == token_uid)).first()
     if existing and existing.id != current_user.id:
         raise HTTPException(status_code=400, detail="This OAuth account is already linked to another user")
     
@@ -511,7 +516,9 @@ def bind_oauth_account(
     except:
         p_data = {}
     
-    current_user.supabase_uid = supabase_info["sub"] # Last used UID
+    # CRITICAL: Always store as string to prevent type mismatch on later comparisons
+    current_user.supabase_uid = token_uid
+    print(f"DEBUG: bind: Bound user '{current_user.username}' (id={current_user.id}) to supabase_uid='{token_uid}', provider='{new_provider}'")
     
     session.add(current_user)
     session.commit()
@@ -622,12 +629,12 @@ def bind_oauth_to_username(
         raise HTTPException(status_code=401, detail="Invalid or expired OAuth token")
     
     # 4. Check if this Supabase UID is already linked to another user
-    existing = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
+    existing = session.exec(select(User).where(User.supabase_uid == str(supabase_info["sub"]))).first()
     if existing and existing.id != user.id:
         raise HTTPException(status_code=400, detail="This OAuth account is already linked to another user")
     
-    # 4. Bind
-    user.supabase_uid = supabase_info["sub"]
+    # 5. Bind
+    user.supabase_uid = str(supabase_info["sub"])
     
     session.add(user)
     session.commit()

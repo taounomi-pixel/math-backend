@@ -65,8 +65,9 @@ def verify_supabase_token(token: str) -> Optional[dict]:
             return None
             
         # Return equivalent structure to the previous decoded payload for compatibility
+        # CRITICAL: Always cast user.id to str to avoid UUID vs string mismatches
         return {
-            "sub": user.id,
+            "sub": str(user.id),
             "email": user.email,
             "provider": user.app_metadata.get("provider", "email")
         }
