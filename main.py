@@ -216,10 +216,13 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
         "suggest_binding": True,
         "access_token": access_token,
         "token_type": "bearer",
-        "user_id": user.id,
-        "username": user.username,
-        "is_admin": user.is_admin,
-        "message": "Login successful."
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "is_admin": user.is_admin,
+            "identities": get_user_identities(user),
+            "email": user.username # As requested
+        }
     }
 
 
@@ -282,10 +285,13 @@ def verify_login_with_oauth(
         "status": "ok",
         "access_token": access_token, 
         "token_type": "bearer",
-        "user_id": user.id,
-        "username": user.username,
-        "is_admin": user.is_admin,
-        "identities": get_user_identities(user)
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "is_admin": user.is_admin,
+            "identities": get_user_identities(user),
+            "email": user.username # As requested
+        }
     }
 
 async def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
