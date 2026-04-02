@@ -21,6 +21,7 @@ from slowapi.errors import RateLimitExceeded
 import filetype
 
 from contextlib import asynccontextmanager
+import json
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -166,11 +167,22 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
     # Check if user has a bound account (Supabase UID)
     # If yes, we require secondary verification via Supabase OAuth/Email
     if user.supabase_uid:
+        # Get list of linked providers from identities_json
+        import json
+        try:
+            providers = json.loads(user.identities_json or "[]")
+        except:
+            providers = []
+            
+        # Fallback to single auth_provider if list is empty
+        if not providers and user.auth_provider:
+            providers = [user.auth_provider]
+            
         return {
             "status": "needs_verification",
-            "auth_provider": user.auth_provider,
+            "auth_providers": providers,
             "email": user.email,
-            "message": f"Please verify your identity using {user.auth_provider or 'your email'}."
+            "message": f"Please verify your identity using one of your linked accounts: {', '.join(providers)}."
         }
     else:
         # User is not bound - allow login but suggest binding
@@ -219,9 +231,36 @@ def verify_login_with_oauth(
         raise HTTPException(status_code=400, detail="User does not have a bound account")
         
     supabase_info = verify_supabase_token(sb_token)
-    if not supabase_info or supabase_info["sub"] != user.supabase_uid:
-        print(f"DEBUG: Identity match failed for user '{user.username}'. DB UID: {user.supabase_uid}, Token SUB: {supabase_info.get('sub') if supabase_info else 'None'}")
-        raise HTTPException(status_code=401, detail="Identity verification failed")
+    if not supabase_info:
+        raise HTTPException(status_code=401, detail="Invalid Supabase token")
+        
+    # IDENTITY HEALING LOGIC (Top Tier Implementation)
+    is_verified = False
+    if supabase_info["sub"] == user.supabase_uid:
+        is_verified = True
+    elif supabase_info.get("email") == user.email and user.email:
+        # Email match fallback: user is logging in with a different linked provider 
+        # or the UID has changed in Supabase.
+        print(f"DEBUG: UID mismatch for '{user.username}', but EMAIL match ({user.email}). Auto-healing UID.")
+        user.supabase_uid = supabase_info["sub"]
+        
+        # Ensure this provider is in their identity list
+        new_provider = supabase_info.get("provider", "email")
+        try:
+            p_list = json.loads(user.identities_json or "[]")
+        except:
+            p_list = []
+        if new_provider not in p_list:
+            p_list.append(new_provider)
+            user.identities_json = json.dumps(p_list)
+        
+        session.add(user)
+        session.commit()
+        is_verified = True
+    
+    if not is_verified:
+        print(f"DEBUG: Identity match failed for user '{user.username}'. DB UID: {user.supabase_uid}, Token SUB: {supabase_info.get('sub')}")
+        raise HTTPException(status_code=401, detail="Identity verification failed. Please use your linked account.")
         
     # Issue absolute JWT
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -312,7 +351,8 @@ def complete_oauth_registration(
         password_hash=hashed_password,
         supabase_uid=supabase_info["sub"],
         email=supabase_info.get("email"),
-        auth_provider=supabase_info.get("provider", "unknown")
+        auth_provider=supabase_info.get("provider", "unknown"),
+        identities_json=json.dumps([supabase_info.get("provider", "unknown")])
     )
     session.add(new_user)
     session.commit()
@@ -410,9 +450,18 @@ def bind_oauth_account(
         raise HTTPException(status_code=400, detail="This OAuth account is already linked to another user")
     
     # Bind
+    new_provider = supabase_info.get("provider", "unknown")
+    try:
+        p_list = json.loads(current_user.identities_json or "[]")
+    except:
+        p_list = []
+    if new_provider not in p_list:
+        p_list.append(new_provider)
+        current_user.identities_json = json.dumps(p_list)
+
     current_user.supabase_uid = supabase_info["sub"]
     current_user.email = supabase_info.get("email") or current_user.email
-    current_user.auth_provider = supabase_info.get("provider", current_user.auth_provider)
+    current_user.auth_provider = new_provider
     
     session.add(current_user)
     session.commit()
@@ -421,6 +470,7 @@ def bind_oauth_account(
     return {
         "message": "OAuth account bound successfully",
         "auth_provider": current_user.auth_provider,
+        "auth_providers": json.loads(current_user.identities_json),
         "email": current_user.email
     }
 
@@ -462,9 +512,18 @@ def bind_oauth_to_username(
         raise HTTPException(status_code=400, detail="This OAuth account is already linked to another user")
     
     # 4. Bind
+    new_provider = supabase_info.get("provider", "unknown")
+    try:
+        p_list = json.loads(user.identities_json or "[]")
+    except:
+        p_list = []
+    if new_provider not in p_list:
+        p_list.append(new_provider)
+        user.identities_json = json.dumps(p_list)
+
     user.supabase_uid = supabase_info["sub"]
     user.email = supabase_info.get("email") or user.email
-    user.auth_provider = supabase_info.get("provider", "unknown")
+    user.auth_provider = new_provider
     
     session.add(user)
     session.commit()
@@ -484,6 +543,7 @@ def bind_oauth_to_username(
         "username": user.username,
         "is_admin": user.is_admin,
         "auth_provider": user.auth_provider,
+        "auth_providers": json.loads(user.identities_json),
         "email": user.email
     }
 

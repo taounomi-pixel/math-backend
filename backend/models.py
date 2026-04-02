@@ -22,6 +22,7 @@ class User(UserBase, table=True):
     supabase_uid: Optional[str] = Field(default=None, unique=True, index=True)  # Supabase auth user ID
     email: Optional[str] = Field(default=None)  # Email from OAuth provider
     auth_provider: Optional[str] = Field(default=None)  # 'github' | 'google' | null
+    identities_json: Optional[str] = Field(default="[]")  # JSON list of providers
 
     # Relationship Back-references
     videos: List["Video"] = Relationship(back_populates="uploader")
