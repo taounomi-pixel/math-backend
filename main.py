@@ -288,7 +288,7 @@ def verify_login_with_oauth(
         "username": user.username,
         "is_admin": user.is_admin,
         "auth_provider": user.auth_provider,
-        "identities_json": json.dumps(identities_list), 
+        "identities": identities_list, 
         "email": user.email
     }
 
@@ -384,7 +384,7 @@ def complete_oauth_registration(
         "username": new_user.username,
         "is_admin": new_user.is_admin,
         "auth_provider": new_user.auth_provider,
-        "identities_json": new_user.identities_json,
+        "identities": list(json.loads(new_user.identities_json).keys()) if new_user.identities_json else [],
         "email": new_user.email
     }
 
@@ -458,7 +458,7 @@ def oauth_login(
         "username": user.username,
         "is_admin": user.is_admin,
         "auth_provider": user.auth_provider,
-        "identities_json": json.dumps(identities_list),
+        "identities": identities_list,
         "email": user.email
     }
 
@@ -512,7 +512,7 @@ def bind_oauth_account(
     return {
         "message": "OAuth account bound successfully",
         "auth_provider": current_user.auth_provider,
-        "auth_providers": list(p_data.keys()),
+        "identities": list(p_data.keys()),
         "email": current_user.email
     }
 
@@ -631,7 +631,7 @@ def bind_oauth_to_username(
         "username": user.username,
         "is_admin": user.is_admin,
         "auth_provider": user.auth_provider,
-        "auth_providers": json.loads(user.identities_json),
+        "identities": json.loads(user.identities_json) if user.identities_json else [],
         "email": user.email
     }
 
