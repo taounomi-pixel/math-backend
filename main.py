@@ -320,28 +320,60 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: Session
 # -----------------
 
 def fetch_bound_providers(supabase_uid: str) -> list:
-    """Query Supabase Admin API to get list of bound OAuth providers for a user."""
+    """
+    Query Supabase Admin API to get list of bound OAuth providers for a user.
+    Uses a 4-tier fallback strategy to handle Supabase API response variations.
+    """
     if not supabase_admin or not supabase_uid:
+        print(f"DEBUG: fetch_bound_providers: skipped (admin={'yes' if supabase_admin else 'NO'}, uid={supabase_uid!r})")
         return []
     try:
-        sb_user = supabase_admin.auth.admin.get_user_by_id(str(supabase_uid))
-        if sb_user and hasattr(sb_user, "user"):
-            # Primary: app_metadata.providers (managed by Supabase)
-            providers = sb_user.user.app_metadata.get('providers', [])
-            # Fallback: extract from identities if app_metadata is empty
-            if not providers and hasattr(sb_user.user, "identities"):
-                providers = list(set(
-                    identity.provider for identity in sb_user.user.identities
-                    if identity.provider and identity.provider != 'email'
-                ))
-            return providers
-        elif sb_user and hasattr(sb_user, "identities"):
-            return list(set(
-                identity.provider for identity in sb_user.identities
-                if identity.provider and identity.provider != 'email'
+        sb_resp = supabase_admin.auth.admin.get_user_by_id(str(supabase_uid))
+        
+        # Normalise: the SDK may return sb_resp.user or the object itself may have the fields
+        sb_user = getattr(sb_resp, 'user', sb_resp)
+        
+        if not sb_user:
+            print(f"DEBUG: fetch_bound_providers: no user object returned for uid={supabase_uid}")
+            return []
+        
+        app_meta = getattr(sb_user, 'app_metadata', {}) or {}
+        identities = getattr(sb_user, 'identities', []) or []
+        
+        print(f"DEBUG: fetch_bound_providers uid={supabase_uid}: app_metadata={app_meta}, identities_count={len(identities)}")
+
+        # TIER 1: app_metadata.providers (plural list) — standard Supabase field
+        providers = app_meta.get('providers', [])
+        if providers:
+            # Filter out 'email' as it is not a real OAuth provider
+            result = [p for p in providers if p and p != 'email']
+            if result:
+                print(f"DEBUG: fetch_bound_providers: TIER1 result={result}")
+                return result
+
+        # TIER 2: app_metadata.provider (singular) — also set by Supabase
+        single = app_meta.get('provider', '')
+        if single and single != 'email':
+            print(f"DEBUG: fetch_bound_providers: TIER2 result=[{single}]")
+            return [single]
+
+        # TIER 3: identities list — iterate and extract provider names
+        if identities:
+            result = list(set(
+                str(getattr(identity, 'provider', '')) for identity in identities
             ))
+            result = [p for p in result if p and p != 'email']
+            if result:
+                print(f"DEBUG: fetch_bound_providers: TIER3 result={result}")
+                return result
+
+        # TIER 4: supabase_uid presence means account IS bound, use generic label
+        # This prevents the UI from showing "unbound" when we know there IS a binding.
+        print(f"DEBUG: fetch_bound_providers: TIER4 fallback — supabase_uid exists but provider unknown")
+        return ["oauth"]
+
     except Exception as e:
-        print(f"DEBUG: fetch_bound_providers error: {e}")
+        print(f"DEBUG: fetch_bound_providers error for uid={supabase_uid}: {e}")
     return []
 
 @app.get("/api/users/me")
@@ -353,12 +385,14 @@ async def get_current_user_info(
     hydrated from Supabase Admin API.
     """
     bound_providers = fetch_bound_providers(current_user.supabase_uid)
+    print(f"DEBUG: /api/users/me: user='{current_user.username}', supabase_uid={current_user.supabase_uid!r}, bound_providers={bound_providers}")
 
     return {
         "id": current_user.id,
         "username": current_user.username,
         "is_admin": current_user.is_admin,
         "email": current_user.username,
+        "supabase_uid": current_user.supabase_uid,  # expose so frontend can double-check
         "bound_providers": bound_providers,
     }
 
