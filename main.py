@@ -312,6 +312,53 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: Session
     raise auth_exception
 
 # -----------------
+# User Info
+# -----------------
+
+def fetch_bound_providers(supabase_uid: str) -> list:
+    """Query Supabase Admin API to get list of bound OAuth providers for a user."""
+    if not supabase_admin or not supabase_uid:
+        return []
+    try:
+        sb_user = supabase_admin.auth.admin.get_user_by_id(str(supabase_uid))
+        if sb_user and hasattr(sb_user, "user"):
+            # Primary: app_metadata.providers (managed by Supabase)
+            providers = sb_user.user.app_metadata.get('providers', [])
+            # Fallback: extract from identities if app_metadata is empty
+            if not providers and hasattr(sb_user.user, "identities"):
+                providers = list(set(
+                    identity.provider for identity in sb_user.user.identities
+                    if identity.provider and identity.provider != 'email'
+                ))
+            return providers
+        elif sb_user and hasattr(sb_user, "identities"):
+            return list(set(
+                identity.provider for identity in sb_user.identities
+                if identity.provider and identity.provider != 'email'
+            ))
+    except Exception as e:
+        print(f"DEBUG: fetch_bound_providers error: {e}")
+    return []
+
+@app.get("/api/users/me")
+async def get_current_user_info(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the current user's profile with real-time bound_providers
+    hydrated from Supabase Admin API.
+    """
+    bound_providers = fetch_bound_providers(current_user.supabase_uid)
+
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "is_admin": current_user.is_admin,
+        "email": current_user.username,
+        "bound_providers": bound_providers,
+    }
+
+# -----------------
 # OAuth Routes
 # -----------------
 
