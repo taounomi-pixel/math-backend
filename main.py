@@ -113,7 +113,7 @@ class OAuthLoginRequest(BaseModel):
     supabase_token: Optional[str] = None
 
 class OAuthVerifyRequest(BaseModel):
-    username: str
+    username: Optional[str] = None
     supabase_token: Optional[str] = None
 
 class OAuthBindRequest(BaseModel):
@@ -193,15 +193,14 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
                 print(f"DEBUG: Failed to fetch identities from Supabase Admin: {e}")
                 bound_providers = ["oauth"] # Generic fallback
         
-        # Raise 403 with error_code to trigger "Verification Mode" in frontend
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error_code": "oauth_verification_required",
-                "message": "Security Policy: MFA required. Please verify your identity via linked account.",
-                "bound_providers": bound_providers
-            }
-        )
+        # Return status=needs_verification with 200 OK to trigger frontend verification mode
+        return {
+            "status": "needs_verification",
+            "error_code": "oauth_verification_required",
+            "message": "Security Policy: MFA required. Please verify your identity via linked account.",
+            "auth_providers": bound_providers,
+            "email": user.username # Masked or actual email
+        }
     
     # Standard password-only login (unbound account)
     session.add(user)
@@ -244,34 +243,33 @@ def verify_login_with_oauth(
     if not sb_token:
         raise HTTPException(status_code=401, detail="Supabase OAuth token required")
 
-    user = session.exec(select(User).where(User.username == data.username)).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    # Step 1: Find user
+    user = None
+    if data.username:
+        user = session.exec(select(User).where(User.username == data.username)).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
     
-    if not user.supabase_uid:
-        raise HTTPException(status_code=400, detail="User does not have a bound account")
-        
+    # Step 2: Verify Supabase token
     supabase_info = verify_supabase_token(sb_token)
     if not supabase_info:
         raise HTTPException(status_code=401, detail="Invalid Supabase token")
-        
-    # CHECK ALL BOUND IDENTITIES
-    try:
-        p_data = json.loads(user.identities_json or "{}")
-        if isinstance(p_data, list):
-            # Migration: convert list to dict
-            p_data = {p: user.supabase_uid for p in p_data}
-            user.identities_json = json.dumps(p_data)
-            session.add(user)
-            session.commit()
-    except:
-        p_data = {}
+    
+    # Step 3: Find user by token if username was missing
+    if not user:
+        user = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="No local account linked to this OAuth identity")
 
-    if supabase_info["sub"] == user.supabase_uid:
-        is_verified = True
-    else:
+    # Step 4: Validate match
+    if not user.supabase_uid:
+        # Auto-bind if they just verified but didn't have it set? 
+        # Actually in MFA flow, it SHOULD already be set.
+        raise HTTPException(status_code=400, detail="User does not have a bound account")
+        
+    if supabase_info["sub"] != user.supabase_uid:
         print(f"DEBUG: Identity match failed for user '{user.username}'. DB UID: {user.supabase_uid}, Token SUB: {supabase_info.get('sub')}")
-        raise HTTPException(status_code=401, detail="Identity verification failed. Please use your linked account.")
+        raise HTTPException(status_code=401, detail="Identity verification failed. Please use your correctly linked account.")
         
     # Issue absolute JWT
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
