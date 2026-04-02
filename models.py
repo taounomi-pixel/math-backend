@@ -15,6 +15,8 @@ class UserBase(SQLModel):
     email: Optional[str] = Field(default=None)
     is_admin: bool = Field(default=False)
     auth_provider: Optional[str] = Field(default=None)
+
+class UserRead(UserBase):
     identities: List[str] = [] # Virtual field for responses
 
 class User(UserBase, table=True):

@@ -12,7 +12,7 @@ import shutil
 
 # Local imports
 from database import create_db_and_tables, engine, supabase, SUPABASE_BUCKET
-from models import User, UserBase, Video, Like, Comment
+from models import User, UserBase, UserRead, Video, Like, Comment
 from auth import verify_password, get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM, verify_supabase_token
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -139,7 +139,7 @@ def get_user_identities(user: User) -> List[str]:
     except:
         return []
 
-@app.post("/api/register", response_model=UserBase)
+@app.post("/api/register", response_model=UserRead)
 @limiter.limit("5/minute")
 def register_user(request: Request, user_in: UserCreate, session: Session = Depends(get_session), internal_secret: Optional[str] = None):
     # Security policy: Disallow direct registration via password only.
