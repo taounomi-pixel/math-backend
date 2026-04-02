@@ -175,12 +175,27 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
 
     # Check if user has a bound account (Supabase UID)
     if user.supabase_uid:
+        # Fetch actual bound providers from Supabase Admin
+        bound_providers = []
+        if supabase_admin:
+            try:
+                sb_user = supabase_admin.auth.admin.get_user_by_id(user.supabase_uid)
+                if sb_user and hasattr(sb_user, "user") and hasattr(sb_user.user, "identities"):
+                    bound_providers = [identity.provider for identity in sb_user.user.identities]
+                # Fallback if structure is different
+                elif sb_user and hasattr(sb_user, "identities"):
+                    bound_providers = [identity.provider for identity in sb_user.identities]
+            except Exception as e:
+                print(f"DEBUG: Failed to fetch identities from Supabase Admin: {e}")
+                bound_providers = ["oauth"] # Generic fallback
+        
         # Raise 403 to trigger "Verification Mode" in frontend
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
                 "error": "oauth_verification_required",
-                "message": "Security Policy: MFA required. Please verify your identity via GitHub or Google."
+                "message": "Security Policy: MFA required. Please verify your identity via GitHub or Google.",
+                "bound_providers": bound_providers
             }
         )
     
