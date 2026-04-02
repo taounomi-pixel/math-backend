@@ -125,6 +125,20 @@ class OAuthBindToUsernameRequest(BaseModel):
     password: str
     supabase_token: str
 
+def get_user_identities(user: User) -> List[str]:
+    """Helper to consistently get list of provider names from identities_json."""
+    if not user.identities_json:
+        return []
+    try:
+        data = json.loads(user.identities_json)
+        if isinstance(data, dict):
+            return list(data.keys())
+        if isinstance(data, list):
+            return data
+        return []
+    except:
+        return []
+
 @app.post("/api/register", response_model=UserBase)
 @limiter.limit("5/minute")
 def register_user(request: Request, user_in: UserCreate, session: Session = Depends(get_session), internal_secret: Optional[str] = None):
@@ -145,12 +159,16 @@ def register_user(request: Request, user_in: UserCreate, session: Session = Depe
     new_user = User(
         username=user_in.username, 
         password_hash=hashed_password,
-        email=user_in.email  # Store email if provided
+        email=user_in.email,  # Store email if provided
+        identities_json="{}" # Initialize as empty dict
     )
     
     session.add(new_user)
     session.commit()
     session.refresh(new_user)
+    
+    # Attach virtual identities for response_model
+    new_user.identities = []
     return new_user
 
 @app.post("/api/login")
@@ -168,11 +186,7 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
     # If yes, we require secondary verification via Supabase OAuth/Email
     if user.supabase_uid:
         # Get list of linked providers from identities_json
-        import json
-        try:
-            providers = json.loads(user.identities_json or "[]")
-        except:
-            providers = []
+        providers = get_user_identities(user)
             
         # Fallback to single auth_provider if list is empty
         if not providers and user.auth_provider:
@@ -180,7 +194,8 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
             
         return {
             "status": "needs_verification",
-            "auth_providers": providers,
+            "auth_provider": providers[0] if providers else user.auth_provider,
+            "identities": providers,
             "email": user.email,
             "message": f"Please verify your identity using one of your linked accounts: {', '.join(providers)}."
         }
@@ -199,7 +214,9 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
             "user_id": user.id,
             "username": user.username,
             "is_admin": user.is_admin,
-            "message": "Login successful. Please consider binding an email to your account for better security."
+            "auth_provider": user.auth_provider,
+            "identities": get_user_identities(user),
+            "message": "Login successful."
         }
 
 
@@ -238,7 +255,11 @@ def verify_login_with_oauth(
     try:
         p_data = json.loads(user.identities_json or "{}")
         if isinstance(p_data, list):
+            # Migration: convert list to dict
             p_data = {p: user.supabase_uid for p in p_data}
+            user.identities_json = json.dumps(p_data)
+            session.add(user)
+            session.commit()
     except:
         p_data = {}
 
@@ -288,7 +309,7 @@ def verify_login_with_oauth(
         "username": user.username,
         "is_admin": user.is_admin,
         "auth_provider": user.auth_provider,
-        "identities": identities_list, 
+        "identities": get_user_identities(user),
         "email": user.email
     }
 
@@ -378,13 +399,14 @@ def complete_oauth_registration(
     )
     
     return {
+        "status": "ok",
         "access_token": access_token,
         "token_type": "bearer",
         "user_id": new_user.id,
         "username": new_user.username,
         "is_admin": new_user.is_admin,
         "auth_provider": new_user.auth_provider,
-        "identities": list(json.loads(new_user.identities_json).keys()) if new_user.identities_json else [],
+        "identities": get_user_identities(new_user),
         "email": new_user.email
     }
 
@@ -440,16 +462,6 @@ def oauth_login(
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     
-    # Prepare identities for frontend 
-    try:
-        identities_raw = json.loads(user.identities_json or "{}")
-        if isinstance(identities_raw, list):
-            identities_list = identities_raw
-        else:
-            identities_list = list(identities_raw.keys())
-    except:
-        identities_list = []
-
     return {
         "status": "ok",
         "access_token": access_token,
@@ -458,7 +470,7 @@ def oauth_login(
         "username": user.username,
         "is_admin": user.is_admin,
         "auth_provider": user.auth_provider,
-        "identities": identities_list,
+        "identities": get_user_identities(user),
         "email": user.email
     }
 
@@ -510,9 +522,13 @@ def bind_oauth_account(
     session.refresh(current_user)
     
     return {
+        "status": "ok",
         "message": "OAuth account bound successfully",
+        "user_id": current_user.id,
+        "username": current_user.username,
+        "is_admin": current_user.is_admin,
         "auth_provider": current_user.auth_provider,
-        "identities": list(p_data.keys()),
+        "identities": get_user_identities(current_user),
         "email": current_user.email
     }
 
@@ -558,8 +574,14 @@ def unbind_oauth_account(
         session.refresh(current_user)
     
     return {
+        "status": "ok",
         "message": f"Successfully unbound {provider}",
-        "identities": list(p_data.keys())
+        "user_id": current_user.id,
+        "username": current_user.username,
+        "is_admin": current_user.is_admin,
+        "auth_provider": current_user.auth_provider,
+        "identities": get_user_identities(current_user),
+        "email": current_user.email
     }
 
 @app.post("/api/auth/bind-to-username")
@@ -602,13 +624,14 @@ def bind_oauth_to_username(
     # 4. Bind
     new_provider = supabase_info.get("provider", "unknown")
     try:
-        p_list = json.loads(user.identities_json or "[]")
+        p_data = json.loads(user.identities_json or "{}")
+        if isinstance(p_data, list):
+            p_data = {p: user.supabase_uid for p in p_data}
     except:
-        p_list = []
-    if new_provider not in p_list:
-        p_list.append(new_provider)
-        user.identities_json = json.dumps(p_list)
-
+        p_data = {}
+        
+    p_data[new_provider] = supabase_info["sub"]
+    user.identities_json = json.dumps(p_data)
     user.supabase_uid = supabase_info["sub"]
     user.email = supabase_info.get("email") or user.email
     user.auth_provider = new_provider
@@ -631,7 +654,7 @@ def bind_oauth_to_username(
         "username": user.username,
         "is_admin": user.is_admin,
         "auth_provider": user.auth_provider,
-        "identities": json.loads(user.identities_json) if user.identities_json else [],
+        "identities": get_user_identities(user),
         "email": user.email
     }
 

@@ -9,19 +9,20 @@ def get_utc_now():
 # User Models
 # -----------------
 class UserBase(SQLModel):
+    id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(index=True, unique=True)
+    email: Optional[str] = Field(default=None)
+    is_admin: bool = Field(default=False)
+    auth_provider: Optional[str] = Field(default=None)
+    identities: List[str] = [] # Virtual field for responses
 
 class User(UserBase, table=True):
     __tablename__ = "users"
-    id: Optional[int] = Field(default=None, primary_key=True)
     password_hash: Optional[str] = Field(default=None)  # Nullable for OAuth-only users
-    is_admin: bool = Field(default=False)
     created_at: datetime = Field(default_factory=get_utc_now)
     
     # Supabase Auth fields
     supabase_uid: Optional[str] = Field(default=None, unique=True, index=True)  # Supabase auth user ID
-    email: Optional[str] = Field(default=None)  # Email from OAuth provider
-    auth_provider: Optional[str] = Field(default=None)  # 'github' | 'google' | null
     identities_json: Optional[str] = Field(default="[]")  # JSON list of providers
 
     # Relationship Back-references
