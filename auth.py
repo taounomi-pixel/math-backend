@@ -71,6 +71,13 @@ def verify_supabase_token(token: str) -> Optional[dict]:
             "provider": user.app_metadata.get("provider", "email")
         }
     except Exception as e:
-        # Log the error for Render monitoring, but fail gracefully for the user
-        print(f"❌ Supabase SDK Verification Failed: {e}")
+        # Avoid noisy logs if it's just a non-Supabase JWT being passed during handshake
+        # But still log for real Supabase authentication issues.
+        err_str = str(e)
+        if "sub claim" in err_str or "Invalid JWT" in err_str:
+            # This is expected when a custom System JWT is passed to this function
+            # during the dual-token handshake process.
+            pass 
+        else:
+            print(f"DEBUG: Supabase token verification failed: {err_str}")
         return None

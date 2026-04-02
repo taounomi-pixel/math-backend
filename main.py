@@ -236,15 +236,10 @@ def verify_login_with_oauth(
     Second step of login for bound accounts.
     Verifies the Supabase token and matches it with the username.
     """
-    # Extract token from Header or Body
+    # Extract token from Body (MUST be explicit)
     sb_token = data.supabase_token
     if not sb_token:
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            sb_token = auth_header.split(" ")[1]
-            
-    if not sb_token:
-        raise HTTPException(status_code=401, detail="Supabase OAuth token required")
+        raise HTTPException(status_code=401, detail="supabase_token in request body required")
 
     # Step 1: Find user
     user = None
@@ -302,7 +297,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: Session
         headers={"WWW-Authenticate": "Bearer"},
     )
     
-    # Try old custom JWT first
+    # Strictly handle custom System JWT only.
+    # This ensures that we never pass a custom token to the Supabase SDK.
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
@@ -312,14 +308,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: Session
                 return user
     except JWTError:
         pass
-    
-    # Try Supabase JWT
-    supabase_info = verify_supabase_token(token)
-    if supabase_info:
-        user = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
-        if user:
-            return user
-    
+            
     raise auth_exception
 
 # -----------------
@@ -446,14 +435,17 @@ def bind_oauth_account(
     """
     Bind an OAuth account to an existing user (logged in with username/password).
     """
-    # MUST use Body for bind, as Header is for current_user
+    # CRITICAL FIX: The current user is identified by the System JWT in the header (Depends(get_current_user))
+    # The account TO BE BOUND is identified by the supabase_token in the request body.
+    # We must NEVER use the Authorization header for Supabase verification during the bind process.
     sb_token = data.supabase_token
     if not sb_token:
-        raise HTTPException(status_code=401, detail="supabase_token in body required for binding")
+        raise HTTPException(status_code=400, detail="supabase_token in body required for binding")
 
+    # Verify that the SUBAPASE token is valid
     supabase_info = verify_supabase_token(sb_token)
     if not supabase_info:
-        raise HTTPException(status_code=401, detail="Invalid or expired OAuth token")
+        raise HTTPException(status_code=401, detail="OAuth Binding Failed: the provided Supabase token is invalid or expired.")
     
     # Check if this Supabase UID is already linked to another user
     existing = session.exec(select(User).where(User.supabase_uid == supabase_info["sub"])).first()
@@ -484,6 +476,8 @@ def bind_oauth_account(
         "user_id": current_user.id,
         "username": current_user.username,
         "is_admin": current_user.is_admin,
+        "auth_provider": supabase_info.get("provider"),
+        "email": supabase_info.get("email"),
         "identities": get_user_identities(current_user)
     }
 
