@@ -1,6 +1,7 @@
 from typing import Optional, List
 from sqlmodel import Field, SQLModel, Relationship
 from datetime import datetime, timezone
+from sqlalchemy import Column, DateTime
 
 def get_utc_now():
     return datetime.now(timezone.utc)
@@ -19,7 +20,9 @@ class UserBase(SQLModel):
 class User(UserBase, table=True):
     __tablename__ = "users"
     password_hash: Optional[str] = Field(default=None)  # Nullable for OAuth-only users
-    created_at: datetime = Field(default_factory=get_utc_now)
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), default=get_utc_now)
+    )
     
     # Supabase Auth fields
     supabase_uid: Optional[str] = Field(default=None, unique=True, index=True)  # Supabase auth user ID
@@ -46,7 +49,9 @@ class Video(VideoBase, table=True):
     __tablename__ = "videos"
     id: Optional[int] = Field(default=None, primary_key=True)
     uploader_id: int = Field(foreign_key="users.id")
-    upload_time: datetime = Field(default_factory=get_utc_now)
+    upload_time: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), default=get_utc_now)
+    )
 
     # Relationship Back-references
     uploader: User = Relationship(back_populates="videos")
@@ -64,7 +69,9 @@ class Comment(CommentBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id", ondelete="CASCADE")
     video_id: int = Field(foreign_key="videos.id", ondelete="CASCADE")
-    created_at: datetime = Field(default_factory=get_utc_now)
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), default=get_utc_now)
+    )
 
     # Relationships
     user: User = Relationship(back_populates="comments")
@@ -77,7 +84,9 @@ class Like(SQLModel, table=True):
     __tablename__ = "likes"
     user_id: int = Field(foreign_key="users.id", primary_key=True, ondelete="CASCADE")
     video_id: int = Field(foreign_key="videos.id", primary_key=True, ondelete="CASCADE")
-    created_at: datetime = Field(default_factory=get_utc_now)
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), default=get_utc_now)
+    )
 
     # Relationships
     user: User = Relationship(back_populates="likes")
