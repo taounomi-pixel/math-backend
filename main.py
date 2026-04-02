@@ -1,4 +1,4 @@
-# MathVis Backend - Auth Fix Multi-Identity Sync v1.0.4
+# MathVis Backend - Auth Fix Multi-Identity Sync v1.0.5 (OAuth Binding Context Closure)
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Request
 from typing import List, Optional
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
