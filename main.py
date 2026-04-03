@@ -609,9 +609,23 @@ def send_email_otp(to_email: str, code: str) -> None:
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     context = ssl.create_default_context()
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
+    server = None
+    try:
+        # 强制设置超时时间为 10 秒
+        server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=10)
         server.login(SMTP_EMAIL, SMTP_PASSWORD)
         server.sendmail(SMTP_EMAIL, to_email, msg.as_string())
+    except Exception as e:
+        # 记录真实日志以便排查
+        print(f"ERROR: Failed to send email to {to_email}: {str(e)}")
+        raise RuntimeError("发件服务器网络异常，请稍后重试或检查配置")
+    finally:
+        # 绝对确保释放连接，避免挂起
+        if server is not None:
+            try:
+                server.quit()
+            except Exception:
+                server.close()
 
 
 @app.post("/api/auth/send-code")
@@ -655,7 +669,9 @@ def send_verification_code(
         send_email_otp(email, code)
     except Exception as e:
         print(f"ERROR: send_verification_code: SMTP failed for {email}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+        # 根据商用标准，无论是 RuntimeError 还是不可预知的其他 Exception，统一返回友好 500
+        raise HTTPException(status_code=500, detail="发件服务器网络异常，请稍后重试或检查配置")
+
 
     print(f"DEBUG: send-code: OTP sent to {email}, intent={data.intent}, expires_at={expires_at}")
     return {"status": "ok", "message": "Verification code sent"}
