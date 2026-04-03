@@ -239,7 +239,7 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
             "error_code": "oauth_verification_required",
             "message": "Security Policy: MFA required. Please verify your identity via linked account.",
             "auth_providers": bound_providers,
-            "email": user.username # Masked or actual email
+            "email": user.email # Masked or actual email
         }
     
     # Standard password-only login (unbound account)
@@ -260,7 +260,7 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
             "id": user.id,
             "username": user.username,
             "is_admin": user.is_admin,
-            "email": user.username,
+            "email": user.email,
             "supabase_uid": user.supabase_uid,
             "bound_providers": [], # Password login for unbound users
             "identities": get_user_identities(user),
@@ -334,7 +334,7 @@ def verify_login_with_oauth(
             "id": user.id,
             "username": user.username,
             "is_admin": user.is_admin,
-            "email": user.username,
+            "email": user.email,
             "supabase_uid": user.supabase_uid,
             "bound_providers": bound_providers,
             "identities": get_user_identities(user),
@@ -440,8 +440,8 @@ async def get_current_user_info(
         "id": current_user.id,
         "username": current_user.username,
         "is_admin": current_user.is_admin,
-        "email": current_user.username,
-        "supabase_uid": current_user.supabase_uid,  # expose so frontend can double-check
+        "email": current_user.email,
+        "supabase_uid": current_user.supabase_uid, 
         "bound_providers": bound_providers,
     }
 
@@ -507,7 +507,7 @@ def complete_oauth_registration(
             "id": new_user.id,
             "username": new_user.username,
             "is_admin": new_user.is_admin,
-            "email": new_user.username, # Masked or username
+            "email": new_user.email,
             "supabase_uid": new_user.supabase_uid,
             "bound_providers": fetch_bound_providers(new_user.supabase_uid),
             "identities": get_user_identities(new_user),
@@ -566,7 +566,7 @@ def oauth_login(
             "id": user.id,
             "username": user.username,
             "is_admin": user.is_admin,
-            "email": user.username,
+            "email": user.email,
             "supabase_uid": user.supabase_uid,
             "bound_providers": bound_providers,
         },
