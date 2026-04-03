@@ -9,12 +9,8 @@ import boto3
 import uuid
 import os
 import shutil
-import smtplib
-import ssl
 import random
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-
+import resend
 # Local imports
 from database import create_db_and_tables, engine, supabase, supabase_admin, SUPABASE_BUCKET
 from models import User, UserBase, UserRead, Video, Like, Comment, VerificationCode
@@ -582,50 +578,22 @@ def oauth_login(
 # Email OTP Routes
 # -----------------
 
-SMTP_HOST = "smtp.qq.com"
-SMTP_PORT = 465
-SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+resend.api_key = RESEND_API_KEY
 
 def send_email_otp(to_email: str, code: str) -> None:
-    """Send a 6-digit OTP via QQ SMTP (SSL, port 465)."""
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"【MathVis】你的登录验证码"
-    msg["From"] = SMTP_EMAIL
-    msg["To"] = to_email
-
-    html_body = f"""
-    <div style="font-family: sans-serif; max-width: 480px; margin: auto;">
-      <h2 style="color:#1a1a1a;">MathVis · 登录验证码</h2>
-      <p style="color:#555;">你好，请使用以下验证码完成登录（有效期 5 分钟）：</p>
-      <div style="font-size:36px; font-weight:700; letter-spacing:8px; color:#111;
-                  background:#f4f4f4; padding:20px 32px; border-radius:12px;
-                  display:inline-block; margin:16px 0;">{code}</div>
-      <p style="color:#999; font-size:13px; margin-top:24px;">
-        如非本人操作，请忽略此邮件。
-      </p>
-    </div>
-    """
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-
-    context = ssl.create_default_context()
-    server = None
     try:
-        # 强制设置超时时间为 10 秒
-        server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=10)
-        server.login(SMTP_EMAIL, SMTP_PASSWORD)
-        server.sendmail(SMTP_EMAIL, to_email, msg.as_string())
+        params = {
+            "from": "MathVis <onboarding@resend.dev>",
+            "to": [to_email],
+            "subject": "【MathVis】你的登录验证码",
+            "html": f"<h2>欢迎来到 MathVis</h2><p>你的验证码是：<strong>{code}</strong></p><p>该验证码 5 分钟内有效。</p>"
+        }
+        email_response = resend.Emails.send(params)
+        print(f"Resend email sent successfully: {email_response}")
     except Exception as e:
-        # 记录真实日志以便排查
-        print(f"ERROR: Failed to send email to {to_email}: {str(e)}")
-        raise RuntimeError("发件服务器网络异常，请稍后重试或检查配置")
-    finally:
-        # 绝对确保释放连接，避免挂起
-        if server is not None:
-            try:
-                server.quit()
-            except Exception:
-                server.close()
+        print(f"ERROR: Resend API Error: {str(e)}")
+        raise RuntimeError("邮件推送服务异常，请稍后重试")
 
 
 @app.post("/api/auth/send-code")
@@ -638,8 +606,8 @@ def send_verification_code(
     """
     Generate a 6-digit OTP, store it, and email it to the user.
     """
-    if not SMTP_EMAIL or not SMTP_PASSWORD:
-        raise HTTPException(status_code=500, detail="SMTP not configured on server")
+    if not RESEND_API_KEY:
+        raise HTTPException(status_code=500, detail="Resend API Key not configured on server")
 
     email = data.email.strip().lower()
     if not email or "@" not in email:
