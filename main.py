@@ -126,7 +126,11 @@ class OAuthBindRequest(BaseModel):
 
 class SendCodeRequest(BaseModel):
     email: str
-    intent: str = "login"  # login, register, bind
+    intent: str = "login"  # login, register, bind, change_email
+
+class ChangeEmailRequest(BaseModel):
+    new_email: str
+    code: str
 
 class VerifyCodeRequest(BaseModel):
     email: str
@@ -645,6 +649,11 @@ def send_verification_code(
         if existing_email:
             raise HTTPException(status_code=400, detail="该邮箱已注册，请使用账号密码登录")
 
+    if data.intent in ["bind", "bind_email", "change_email"]:
+        existing_email = session.exec(select(User).where(User.email == email)).first()
+        if existing_email:
+            raise HTTPException(status_code=400, detail="该邮箱已被其他账号占用")
+
     # Delete any stale codes for this email before creating a new one
     old_codes = session.exec(select(VerificationCode).where(VerificationCode.email == email)).all()
     for old in old_codes:
@@ -742,6 +751,68 @@ def verify_email_code(
         },
         "bound_providers": bound_providers,
     }
+
+
+@app.post("/api/auth/unbind-email")
+def unbind_email(
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Remove the bound email from the current user.
+    """
+    user.email = None
+    session.add(user)
+    session.commit()
+    return {"status": "ok", "message": "Email unbound successfully"}
+
+
+@app.post("/api/auth/change-email")
+def change_email_endpoint(
+    data: ChangeEmailRequest,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Verify the code for the NEW email and update the user's record.
+    """
+    new_email = data.new_email.strip().lower()
+    code = data.code.strip()
+
+    # 1. Look up the code record
+    record = session.exec(
+        select(VerificationCode)
+        .where(VerificationCode.email == new_email)
+        .where(VerificationCode.code == code)
+    ).first()
+
+    if not record:
+        raise HTTPException(status_code=401, detail="验证码错误")
+
+    # 2. Check expiry
+    now = datetime.now(timezone.utc)
+    expires = record.expires_at
+    if expires.tzinfo is None:
+        from datetime import timezone as _tz
+        expires = expires.replace(tzinfo=_tz.utc)
+        
+    if now > expires:
+        session.delete(record)
+        session.commit()
+        raise HTTPException(status_code=401, detail="验证码已过期")
+
+    # 3. Double check if email is already taken by someone else
+    existing_user = session.exec(select(User).where(User.email == new_email)).first()
+    if existing_user and existing_user.id != user.id:
+        raise HTTPException(status_code=400, detail="该邮箱已被其他账号占用")
+
+    # 4. Update and Consume
+    user.email = new_email
+    session.add(user)
+    session.delete(record)
+    session.commit()
+
+    return {"status": "ok", "message": "Email updated successfully"}
 
 
 @app.post("/api/auth/bind")
