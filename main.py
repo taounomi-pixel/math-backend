@@ -4,15 +4,20 @@ from typing import List, Optional
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, select
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 import boto3
 import uuid
 import os
 import shutil
+import smtplib
+import ssl
+import random
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Local imports
 from database import create_db_and_tables, engine, supabase, supabase_admin, SUPABASE_BUCKET
-from models import User, UserBase, UserRead, Video, Like, Comment
+from models import User, UserBase, UserRead, Video, Like, Comment, VerificationCode
 from auth import verify_password, get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM, verify_supabase_token
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -118,6 +123,13 @@ class OAuthVerifyRequest(BaseModel):
 
 class OAuthBindRequest(BaseModel):
     supabase_token: str
+
+class SendCodeRequest(BaseModel):
+    email: str
+
+class VerifyCodeRequest(BaseModel):
+    email: str
+    code: str
 
 class OAuthBindToUsernameRequest(BaseModel):
     username: str
@@ -529,6 +541,162 @@ def oauth_login(
         "bound_providers": bound_providers,
         "identities": get_user_identities(user)
     }
+
+# -----------------
+# Email OTP Routes
+# -----------------
+
+SMTP_HOST = "smtp.qq.com"
+SMTP_PORT = 465
+SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+
+def send_email_otp(to_email: str, code: str) -> None:
+    """Send a 6-digit OTP via QQ SMTP (SSL, port 465)."""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"【MathVis】你的登录验证码"
+    msg["From"] = SMTP_EMAIL
+    msg["To"] = to_email
+
+    html_body = f"""
+    <div style="font-family: sans-serif; max-width: 480px; margin: auto;">
+      <h2 style="color:#1a1a1a;">MathVis · 登录验证码</h2>
+      <p style="color:#555;">你好，请使用以下验证码完成登录（有效期 5 分钟）：</p>
+      <div style="font-size:36px; font-weight:700; letter-spacing:8px; color:#111;
+                  background:#f4f4f4; padding:20px 32px; border-radius:12px;
+                  display:inline-block; margin:16px 0;">{code}</div>
+      <p style="color:#999; font-size:13px; margin-top:24px;">
+        如非本人操作，请忽略此邮件。
+      </p>
+    </div>
+    """
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
+        server.login(SMTP_EMAIL, SMTP_PASSWORD)
+        server.sendmail(SMTP_EMAIL, to_email, msg.as_string())
+
+
+@app.post("/api/auth/send-code")
+@limiter.limit("5/minute")
+def send_verification_code(
+    request: Request,
+    data: SendCodeRequest,
+    session: Session = Depends(get_session)
+):
+    """
+    Generate a 6-digit OTP, store it, and email it to the user.
+    """
+    if not SMTP_EMAIL or not SMTP_PASSWORD:
+        raise HTTPException(status_code=500, detail="SMTP not configured on server")
+
+    email = data.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email address")
+
+    # Delete any stale codes for this email before creating a new one
+    old_codes = session.exec(select(VerificationCode).where(VerificationCode.email == email)).all()
+    for old in old_codes:
+        session.delete(old)
+    session.commit()
+
+    code = str(random.randint(100000, 999999))
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    record = VerificationCode(email=email, code=code, expires_at=expires_at)
+    session.add(record)
+    session.commit()
+
+    try:
+        send_email_otp(email, code)
+    except Exception as e:
+        print(f"ERROR: send_verification_code: SMTP failed for {email}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+
+    print(f"DEBUG: send-code: OTP sent to {email}, expires_at={expires_at}")
+    return {"status": "ok", "message": "Verification code sent"}
+
+
+@app.post("/api/auth/verify-code")
+@limiter.limit("10/minute")
+def verify_email_code(
+    request: Request,
+    data: VerifyCodeRequest,
+    session: Session = Depends(get_session)
+):
+    """
+    Validate a 6-digit email OTP and return a system JWT.
+    Auto-registers the user if no account exists for this email.
+    """
+    email = data.email.strip().lower()
+    code = data.code.strip()
+
+    # 1. Look up the code record
+    record = session.exec(
+        select(VerificationCode)
+        .where(VerificationCode.email == email)
+        .where(VerificationCode.code == code)
+    ).first()
+
+    if not record:
+        raise HTTPException(status_code=401, detail="验证码错误，请重新获取")
+
+    # 2. Check expiry (compare offset-aware datetimes)
+    now = datetime.now(timezone.utc)
+    expires = record.expires_at
+    if expires.tzinfo is None:
+        # Make naive datetimes timezone-aware (UTC)
+        from datetime import timezone as _tz
+        expires = expires.replace(tzinfo=_tz.utc)
+    if now > expires:
+        session.delete(record)
+        session.commit()
+        raise HTTPException(status_code=401, detail="验证码已过期，请重新获取")
+
+    # 3. Consume the code immediately (one-time use)
+    session.delete(record)
+    session.commit()
+
+    # 4. Find or auto-create user by email (username = email)
+    user = session.exec(select(User).where(User.username == email)).first()
+    if not user:
+        import secrets
+        random_pw = secrets.token_urlsafe(16)
+        user = User(
+            username=email,
+            password_hash=get_password_hash(random_pw),
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        print(f"DEBUG: verify-code: auto-registered new user '{email}'")
+    else:
+        print(f"DEBUG: verify-code: existing user '{email}' logged in via OTP")
+
+    # 5. Issue system JWT
+    access_token = create_access_token(
+        data={"sub": user.username, "id": user.id},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+
+    # 6. Hydrate bound_providers (may be empty for OTP-only users)
+    bound_providers = fetch_bound_providers(user.supabase_uid) if user.supabase_uid else []
+
+    return {
+        "status": "ok",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "is_admin": user.is_admin,
+            "email": email,
+            "bound_providers": bound_providers,
+        },
+        "bound_providers": bound_providers,
+    }
+
 
 @app.post("/api/auth/bind")
 def bind_oauth_account(

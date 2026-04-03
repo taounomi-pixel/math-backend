@@ -89,3 +89,18 @@ class Like(SQLModel, table=True):
     # Relationships
     user: User = Relationship(back_populates="likes")
     video: Video = Relationship(back_populates="likes")
+
+# -----------------
+# Email OTP Models
+# -----------------
+class VerificationCode(SQLModel, table=True):
+    __tablename__ = "verification_codes"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: str = Field(index=True)
+    code: str = Field(max_length=6)
+    expires_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True))
+    )
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), default=get_utc_now)
+    )
