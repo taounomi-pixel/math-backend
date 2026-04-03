@@ -417,10 +417,9 @@ def fetch_bound_providers(supabase_uid: str) -> list:
                 print(f"DEBUG: fetch_bound_providers: TIER3 result={result}")
                 return result
 
-        # TIER 4: supabase_uid presence means account IS bound, use generic label
-        # This prevents the UI from showing "unbound" when we know there IS a binding.
-        print(f"DEBUG: fetch_bound_providers: TIER4 fallback — supabase_uid exists but provider unknown")
-        return ["oauth"]
+        # TIER 4: No known provider found
+        print(f"DEBUG: fetch_bound_providers: TIER4 - No known providers found")
+        return []
 
     except Exception as e:
         print(f"DEBUG: fetch_bound_providers error for uid={supabase_uid}: {e}")
@@ -799,6 +798,58 @@ def bind_oauth_account(
         "auth_provider": supabase_info.get("provider"),
         "email": supabase_info.get("email"),
         "identities": get_user_identities(current_user)
+    }
+
+@app.post("/api/auth/bind-email")
+@limiter.limit("5/minute")
+def bind_email_address(
+    request: Request,
+    data: VerifyCodeRequest, # email, code
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Bind an email address to the current user via OTP verification.
+    """
+    email = data.email.strip().lower()
+    code = data.code.strip()
+
+    # 1. Verify OTP
+    record = session.exec(
+        select(VerificationCode)
+        .where(VerificationCode.email == email)
+        .where(VerificationCode.code == code)
+    ).first()
+
+    if not record:
+        raise HTTPException(status_code=400, detail="验证码错误")
+
+    if record.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        session.delete(record)
+        session.commit()
+        raise HTTPException(status_code=400, detail="验证码已过期")
+
+    # 2. Check email uniqueness
+    existing = session.exec(select(User).where(User.email == email)).first()
+    if existing and existing.id != current_user.id:
+        raise HTTPException(status_code=400, detail="该邮箱已被其他账号绑定")
+
+    # 3. Bind email
+    current_user.email = email
+    session.add(current_user)
+    session.delete(record)
+    session.commit()
+    session.refresh(current_user)
+
+    return {
+        "status": "ok",
+        "message": "Email bound successfully",
+        "user": {
+            "id": current_user.id,
+            "username": current_user.username,
+            "email": current_user.email,
+            "bound_providers": fetch_bound_providers(current_user.supabase_uid)
+        }
     }
 
 @app.post("/api/auth/unbind")
