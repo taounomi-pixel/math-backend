@@ -280,6 +280,10 @@ def verify_login_with_oauth(
         expires_delta=access_token_expires
     )
 
+    # Hydrate bound_providers so frontend can skip the extra /me call
+    bound_providers = fetch_bound_providers(user.supabase_uid)
+    print(f"DEBUG: verify-login: user='{user.username}', bound_providers={bound_providers}")
+
     return {
         "status": "ok",
         "access_token": access_token, 
@@ -288,9 +292,12 @@ def verify_login_with_oauth(
             "id": user.id,
             "username": user.username,
             "is_admin": user.is_admin,
+            "email": user.username,
+            "bound_providers": bound_providers,
             "identities": get_user_identities(user),
-            "email": user.username # As requested
-        }
+        },
+        # Flat alias
+        "bound_providers": bound_providers,
     }
 
 async def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
@@ -499,14 +506,27 @@ def oauth_login(
         data={"sub": user.username, "id": user.id},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    
+
+    # Hydrate bound_providers so frontend can skip the extra /me call
+    bound_providers = fetch_bound_providers(user.supabase_uid)
+    print(f"DEBUG: oauth-login: user='{user.username}', bound_providers={bound_providers}")
+
     return {
         "status": "ok",
         "access_token": access_token,
         "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "is_admin": user.is_admin,
+            "email": user.username,
+            "bound_providers": bound_providers,
+        },
+        # Keep flat aliases for backward-compat with any callers that read top-level keys
         "user_id": user.id,
         "username": user.username,
         "is_admin": user.is_admin,
+        "bound_providers": bound_providers,
         "identities": get_user_identities(user)
     }
 
