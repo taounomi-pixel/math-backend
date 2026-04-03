@@ -717,21 +717,15 @@ def verify_email_code(
     session.delete(record)
     session.commit()
 
-    # 4. Find or auto-create user by email (username = email)
-    user = session.exec(select(User).where(User.username == email)).first()
+    # 4. Find user strictly by email field (do NOT query by username)
+    user = session.exec(select(User).where(User.email == email)).first()
+    
+    # 绝对禁止静默由于没找到用户而用邮箱注册了一个没有被认证的新用户 ("shadow account")
     if not user:
-        import secrets
-        random_pw = secrets.token_urlsafe(16)
-        user = User(
-            username=email,
-            password_hash=get_password_hash(random_pw),
-        )
-        session.add(user)
-        session.commit()
-        session.refresh(user)
-        print(f"DEBUG: verify-code: auto-registered new user '{email}'")
-    else:
-        print(f"DEBUG: verify-code: existing user '{email}' logged in via OTP")
+        print(f"DEBUG: verify-code: rejected OTP login for unbound email '{email}'")
+        raise HTTPException(status_code=401, detail="该邮箱尚未绑定任何账号")
+        
+    print(f"DEBUG: verify-code: existing user '{user.username}' logged in via OTP")
 
     # 5. Issue system JWT
     access_token = create_access_token(
