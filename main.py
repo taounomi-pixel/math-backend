@@ -321,12 +321,13 @@ def verify_login_with_oauth(
             user = session.exec(select(User).where(User.username == data.username)).first()
         
         if not user:
+            # Fallback to finding user by supabase_uid from token
             user = session.exec(select(User).where(User.supabase_uid == str(supabase_info["sub"]))).first()
         
         if not user:
             raise HTTPException(status_code=404, detail="No local account linked to this identity")
 
-        # Identity match verification
+        # Identity match verification (OAuth Track specific)
         if str(user.supabase_uid) != str(supabase_info["sub"]):
             raise HTTPException(status_code=401, detail="Identity verification failed")
 
@@ -334,20 +335,7 @@ def verify_login_with_oauth(
         raise HTTPException(status_code=400, detail="Missing verification data (token or code)")
 
     # Final Step: Issue System JWT
-    if not user.supabase_uid:
-        print(f"DEBUG: verify-login: User '{user.username}' has no supabase_uid bound. Cannot verify.")
-        raise HTTPException(status_code=400, detail="User does not have a bound account")
-    
-    # CRITICAL: Force str() on both sides to prevent UUID object vs string mismatch
-    db_uid = str(user.supabase_uid)
-    token_uid = str(supabase_info["sub"])
-    print(f"DEBUG: verify-login: Comparing DB UID='{db_uid}' (type={type(user.supabase_uid).__name__}) vs Token SUB='{token_uid}' (type={type(supabase_info['sub']).__name__})")
-    
-    if token_uid != db_uid:
-        print(f"DEBUG: Identity match FAILED for user '{user.username}'. DB UID: {db_uid}, Token SUB: {token_uid}")
-        raise HTTPException(status_code=401, detail="Identity verification failed. Please use your correctly linked account.")
-        
-    # Issue absolute JWT
+    # At this point, the user has been verified by either Track A (OTP) or Track B (OAuth)
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.username, "id": user.id}, 
@@ -355,12 +343,13 @@ def verify_login_with_oauth(
     )
 
     # Hydrate bound_providers so frontend can skip the extra /me call
+    # fetch_bound_providers safely returns [] if user.supabase_uid is None (OTP Track)
     bound_providers = fetch_bound_providers(user.supabase_uid)
     print(f"DEBUG: verify-login: user='{user.username}', bound_providers={bound_providers}")
 
     return {
         "status": "ok",
-        "access_token": access_token, 
+        "access_token": access_token,
         "token_type": "bearer",
         "user": {
             "id": user.id,
@@ -372,7 +361,7 @@ def verify_login_with_oauth(
             "identities": get_user_identities(user),
         },
         # Flat alias
-        "bound_providers": bound_providers,
+        "bound_providers": bound_providers
     }
 
 async def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
