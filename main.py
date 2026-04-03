@@ -584,7 +584,7 @@ resend.api_key = RESEND_API_KEY
 def send_email_otp(to_email: str, code: str) -> None:
     try:
         params = {
-            "from": "MathVis <onboarding@resend.dev>",
+            "from": "MathVis <noreply@math-vis.xin>",
             "to": [to_email],
             "subject": "【MathVis】你的登录验证码",
             "html": f"<h2>欢迎来到 MathVis</h2><p>你的验证码是：<strong>{code}</strong></p><p>该验证码 5 分钟内有效。</p>"
