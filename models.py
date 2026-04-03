@@ -12,6 +12,7 @@ def get_utc_now():
 class UserBase(SQLModel):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(index=True, unique=True)
+    email: Optional[str] = Field(default=None, index=True)
     is_admin: bool = Field(default=False)
 
 class UserRead(UserBase):

@@ -109,6 +109,8 @@ from pydantic import BaseModel
 class UserCreate(BaseModel):
     username: str
     password: str
+    email: str
+    code: str
 
 class OAuthCompleteRegistration(BaseModel):
     username: str
@@ -126,6 +128,7 @@ class OAuthBindRequest(BaseModel):
 
 class SendCodeRequest(BaseModel):
     email: str
+    intent: str = "login"  # login, register, bind
 
 class VerifyCodeRequest(BaseModel):
     email: str
@@ -146,31 +149,56 @@ def get_user_identities(user: User) -> List[str]:
 
 @app.post("/api/register", response_model=UserRead)
 @limiter.limit("5/minute")
-def register_user(request: Request, user_in: UserCreate, session: Session = Depends(get_session), internal_secret: Optional[str] = None):
-    # Security policy: Disallow direct registration via password only.
-    # Users must use the OAuth registration flow.
-    if internal_secret != os.getenv("ADMIN_INTERNAL_SECRET"):
-        raise HTTPException(
-            status_code=400, 
-            detail="Security Policy: Direct registration is disabled. Please verify your identity via GitHub or Google to create an account."
-        )
+def register_user(request: Request, user_in: UserCreate, session: Session = Depends(get_session)):
+    """
+    Public registration endpoint. Now requires Email OTP.
+    """
+    email = user_in.email.strip().lower()
+    code = user_in.code.strip()
 
-    # Existing registration logic (kept for internal use only)
+    # 1. Verify OTP Code
+    record = session.exec(
+        select(VerificationCode).where(
+            VerificationCode.email == email,
+            VerificationCode.code == code
+        )
+    ).first()
+
+    if not record:
+        raise HTTPException(status_code=400, detail="验证码错误")
+    
+    if record.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        session.delete(record)
+        session.commit()
+        raise HTTPException(status_code=400, detail="验证码已过期")
+
+    # 2. Check duplicate username
     existing_user = session.exec(select(User).where(User.username == user_in.username)).first()
     if existing_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
+        raise HTTPException(status_code=400, detail="用户名已被占用")
     
+    # 3. Check duplicate email (Safety check)
+    existing_email = session.exec(select(User).where(User.email == email)).first()
+    if existing_email:
+        raise HTTPException(status_code=400, detail="该邮箱已注册，请直接登录")
+
+    # 4. Create User
     hashed_password = get_password_hash(user_in.password)
     new_user = User(
         username=user_in.username, 
-        password_hash=hashed_password
+        password_hash=hashed_password,
+        email=email
     )
     
     session.add(new_user)
+    # Delete the used code
+    session.delete(record)
     session.commit()
     session.refresh(new_user)
     
     # Attach virtual identities for response_model
+    new_user.identities = get_user_identities(new_user)
+    return new_user
     new_user.identities = []
     return new_user
 
@@ -232,8 +260,10 @@ def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestFor
             "id": user.id,
             "username": user.username,
             "is_admin": user.is_admin,
+            "email": user.username,
+            "supabase_uid": user.supabase_uid,
+            "bound_providers": [], # Password login for unbound users
             "identities": get_user_identities(user),
-            "email": user.username # As requested
         }
     }
 
@@ -305,6 +335,7 @@ def verify_login_with_oauth(
             "username": user.username,
             "is_admin": user.is_admin,
             "email": user.username,
+            "supabase_uid": user.supabase_uid,
             "bound_providers": bound_providers,
             "identities": get_user_identities(user),
         },
@@ -473,10 +504,15 @@ def complete_oauth_registration(
         "status": "ok",
         "access_token": access_token,
         "token_type": "bearer",
-        "user_id": new_user.id,
-        "username": new_user.username,
-        "is_admin": new_user.is_admin,
-        "identities": get_user_identities(new_user)
+        "user": {
+            "id": new_user.id,
+            "username": new_user.username,
+            "is_admin": new_user.is_admin,
+            "email": new_user.username, # Masked or username
+            "supabase_uid": new_user.supabase_uid,
+            "bound_providers": fetch_bound_providers(new_user.supabase_uid),
+            "identities": get_user_identities(new_user),
+        }
     }
 
 @app.post("/api/auth/oauth-login")
@@ -532,6 +568,7 @@ def oauth_login(
             "username": user.username,
             "is_admin": user.is_admin,
             "email": user.username,
+            "supabase_uid": user.supabase_uid,
             "bound_providers": bound_providers,
         },
         # Keep flat aliases for backward-compat with any callers that read top-level keys
@@ -595,6 +632,13 @@ def send_verification_code(
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="Invalid email address")
 
+    # Intent check ONLY for registration
+    if data.intent == "register":
+        # Check if email is already registered in our local 'users' table
+        existing_email = session.exec(select(User).where(User.email == email)).first()
+        if existing_email:
+            raise HTTPException(status_code=400, detail="该邮箱已注册，请使用账号密码登录")
+
     # Delete any stale codes for this email before creating a new one
     old_codes = session.exec(select(VerificationCode).where(VerificationCode.email == email)).all()
     for old in old_codes:
@@ -614,7 +658,7 @@ def send_verification_code(
         print(f"ERROR: send_verification_code: SMTP failed for {email}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
 
-    print(f"DEBUG: send-code: OTP sent to {email}, expires_at={expires_at}")
+    print(f"DEBUG: send-code: OTP sent to {email}, intent={data.intent}, expires_at={expires_at}")
     return {"status": "ok", "message": "Verification code sent"}
 
 
