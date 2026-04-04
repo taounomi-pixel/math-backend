@@ -12,7 +12,7 @@ import shutil
 import random
 import resend
 # Local imports
-from database import create_db_and_tables, engine, supabase, supabase_admin, SUPABASE_BUCKET
+from database import create_db_and_tables, engine, supabase, supabase_admin, SUPABASE_BUCKET, s3_client, R2_BUCKET_NAME, R2_PUBLIC_DOMAIN
 from models import User, UserBase, UserRead, Video, Like, Comment, VerificationCode
 from auth import verify_password, get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM, verify_supabase_token
 from fastapi.middleware.cors import CORSMiddleware
@@ -1072,11 +1072,11 @@ async def upload_video(
         
     unique_filename = f"{uuid.uuid4()}_{file.filename}"
     
-    # Force Cloud Storage requirement
-    if not supabase:
+    # Force Cloud Storage requirement (Cloudflare R2)
+    if not s3_client:
         raise HTTPException(
             status_code=500, 
-            detail="Supabase Storage is not configured. Cloud upload is required."
+            detail="Cloudflare R2 is not configured. Cloud upload is required."
         )
         
     try:
@@ -1092,22 +1092,19 @@ async def upload_video(
         if kind is None or not kind.mime.startswith('video/'):
             raise HTTPException(status_code=400, detail="Invalid file type. Only genuine videos are permitted.")
 
-        # Use supabase logic
-        supabase.storage.from_(SUPABASE_BUCKET).upload(
-            path=unique_filename,
-            file=file_data,
-            file_options={"content-type": file.content_type}
+        # Use R2 (S3) logic
+        s3_client.put_object(
+            Bucket=R2_BUCKET_NAME,
+            Key=unique_filename,
+            Body=file_data,
+            ContentType=file.content_type
         )
             
         # Get public URL
-        video_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(unique_filename)
-        
-        # Verify the URL is valid, fallback check (optional)
-        if not video_url:
-             raise Exception("Supabase returned an empty public URL.")
+        video_url = f"{R2_PUBLIC_DOMAIN}/{unique_filename}"
              
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to upload video to Supabase: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload video to Cloudflare R2: {str(e)}")
     
     # Optional Source Code Upload
     manim_source_url = None
@@ -1118,16 +1115,15 @@ async def upload_video(
         source_unique_filename = f"{uuid.uuid4()}_{source_file.filename}"
         try:
             source_data = await source_file.read()
-            # Try uploading with the inferred content type if specific one fails
-            supabase.storage.from_(SUPABASE_BUCKET).upload(
-                path=source_unique_filename,
-                file=source_data,
-                file_options={"content-type": "text/plain; charset=utf-8"} # Add utf-8 charset for Python code
+            s3_client.put_object(
+                Bucket=R2_BUCKET_NAME,
+                Key=source_unique_filename,
+                Body=source_data,
+                ContentType="text/plain; charset=utf-8"
             )
-            manim_source_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(source_unique_filename)
+            manim_source_url = f"{R2_PUBLIC_DOMAIN}/{source_unique_filename}"
         except Exception as e:
-            # Re-raise as 500 so we can see the error in frontend
-            raise HTTPException(status_code=500, detail=f"Failed to upload Manim source to Supabase: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to upload Manim source to Cloudflare R2: {str(e)}")
     
     new_video = Video(
         title=title,
@@ -1237,28 +1233,31 @@ def delete_video(
     if video.uploader_id != current_user.id and not current_user.is_admin:
         raise HTTPException(status_code=403, detail=f"Not authorized. u={current_user.id} vs o={video.uploader_id} a={current_user.is_admin}")
         
-    # Attempt to delete from Supabase if configured
-    if supabase:
+    # Attempt to delete from Cloudflare R2 if configured
+    if s3_client:
         from urllib.parse import urlparse
-        files_to_remove = []
+        objects_to_delete = []
         
         # Add video file to removal list
         if video.video_url:
             video_filename = urlparse(video.video_url).path.split('/')[-1]
-            files_to_remove.append(video_filename)
+            objects_to_delete.append({'Key': video_filename})
             
         # Add manim source file to removal list
         if video.manim_source_url:
             source_filename = urlparse(video.manim_source_url).path.split('/')[-1]
-            files_to_remove.append(source_filename)
+            objects_to_delete.append({'Key': source_filename})
             
-        if files_to_remove:
+        if objects_to_delete:
             try:
-                supabase.storage.from_(SUPABASE_BUCKET).remove(files_to_remove)
-                print(f"DEBUG: Removed from Supabase Storage: {files_to_remove}")
+                s3_client.delete_objects(
+                    Bucket=R2_BUCKET_NAME,
+                    Delete={'Objects': objects_to_delete}
+                )
+                print(f"DEBUG: Removed from Cloudflare R2: {objects_to_delete}")
             except Exception as e:
                 # We continue even if storage delete fails, but log it
-                print(f"Failed to delete from Supabase: {e}")
+                print(f"Failed to delete from Cloudflare R2: {e}")
             
     # Delete associated likes and comments first (handles pre-existing tables without CASCADE)
     existing_likes = session.exec(select(Like).where(Like.video_id == video_id)).all()

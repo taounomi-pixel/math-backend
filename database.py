@@ -2,6 +2,8 @@ import os
 from sqlmodel import create_engine, SQLModel
 from dotenv import load_dotenv
 from supabase import create_client, Client
+import boto3
+from botocore.config import Config
 
 # MUST load environment variables before using them
 load_dotenv()
@@ -50,6 +52,37 @@ if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
         print(f"❌ FAILED to initialize Supabase Admin Client: {e}")
 elif SUPABASE_URL:
     print("⚠️ WARNING: SUPABASE_SERVICE_ROLE_KEY missing. Admin operations disabled.")
+
+# -----------------
+# Cloudflare R2 Configuration (S3 Compatible)
+# -----------------
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
+R2_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL")
+R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
+R2_PUBLIC_DOMAIN = os.getenv("R2_PUBLIC_DOMAIN", "").rstrip('/')
+
+# Pre-compute R2 Client with forced s3v4 signature
+r2_config = Config(
+    signature_version='s3v4',
+    retries={'max_attempts': 3, 'mode': 'standard'}
+)
+
+s3_client = None
+if all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT_URL]):
+    try:
+        s3_client = boto3.client(
+            's3',
+            endpoint_url=R2_ENDPOINT_URL,
+            aws_access_key_id=R2_ACCESS_KEY_ID,
+            aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+            config=r2_config
+        )
+        print("✅ Cloudflare R2 S3 Client initialized.")
+    except Exception as e:
+        print(f"❌ FAILED to initialize R2 S3 Client: {e}")
+else:
+    print("⚠️ WARNING: Cloudflare R2 credentials missing. S3 operations disabled.")
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
