@@ -11,6 +11,7 @@ import os
 import shutil
 import random
 import resend
+import traceback
 # Local imports
 from database import create_db_and_tables, engine, supabase, supabase_admin, SUPABASE_BUCKET, s3_client, R2_BUCKET_NAME, R2_PUBLIC_DOMAIN
 from models import User, UserBase, UserRead, Video, Like, Comment, VerificationCode
@@ -1154,23 +1155,11 @@ async def upload_video(
         print(f"✅ DEBUG: Database record committed successfully: ID {new_video.id}")
         
         return {"message": "Video uploaded successfully", "video": new_video}
-    except Exception as db_err:
-        print(f"❌ DEBUG: Database commit FAILED: {db_err}")
+    except Exception as e:
+        print(f"❌ CRITICAL ERROR IN VIDEO UPLOAD: {e}")
+        print(traceback.format_exc())
         session.rollback()
-        
-        # Cleanup uploaded files from R2 on DB failure to prevent orphaned objects
-        try:
-            s3_client.delete_object(Bucket=R2_BUCKET_NAME, Key=unique_filename)
-            if manim_source_url:
-                # Need to extract filename from URL or store the key earlier
-                # Based on previous logic, source_unique_filename was used
-                source_key = manim_source_url.split('/')[-1]
-                s3_client.delete_object(Bucket=R2_BUCKET_NAME, Key=source_key)
-            print(f"🗑️ DEBUG: R2 cleanup successful after DB failure")
-        except Exception as cleanup_err:
-            print(f"⚠️ DEBUG: R2 cleanup FAILED: {cleanup_err}")
-            
-        raise HTTPException(status_code=500, detail=f"Database persistence failure: {str(db_err)}")
+        raise HTTPException(status_code=500, detail=f"Backend process error: {str(e)}")
 
 @app.get("/api/videos")
 def get_videos(request: Request, session: Session = Depends(get_session)):
