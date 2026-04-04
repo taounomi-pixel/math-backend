@@ -1118,7 +1118,7 @@ async def upload_video(
     
     # Optional Source Code Upload
     manim_source_url = None
-    if source_file:
+    if source_file and source_file.filename:
         if not source_file.filename.endswith('.py'):
             raise HTTPException(status_code=400, detail="Only .py files are supported for Manim source.")
             
