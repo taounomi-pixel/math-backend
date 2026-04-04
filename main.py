@@ -101,10 +101,11 @@ def get_session():
 # -----------------
 # Health Check (Keep-alive)
 # -----------------
-@app.get("/api/health")
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 async def health_check():
     """
     Lightweight endpoint for uptime monitors to prevent Render from sleeping.
+    Supports both GET and HEAD methods.
     """
     return {"status": "alive", "message": "MathVis backend is running"}
 
