@@ -1078,8 +1078,24 @@ async def upload_video(
     try:
         print(f"DEBUG: [STEP 1] Checking s3_client...")
         if not s3_client:
-            print("❌ DEBUG: s3_client is NONE!")
-            raise HTTPException(status_code=500, detail="Cloudflare R2 is not configured.")
+            print("❌ DEBUG: s3_client is NONE! Running live diagnostics on R2 Env Vars...")
+            r2_vars = {
+                "R2_ACCESS_KEY_ID": os.getenv("R2_ACCESS_KEY_ID"),
+                "R2_SECRET_ACCESS_KEY": os.getenv("R2_SECRET_ACCESS_KEY"),
+                "R2_ENDPOINT_URL": os.getenv("R2_ENDPOINT_URL"),
+                "R2_BUCKET_NAME": os.getenv("R2_BUCKET_NAME"),
+                "R2_PUBLIC_DOMAIN": os.getenv("R2_PUBLIC_DOMAIN")
+            }
+            missing_vars = [k for k, v in r2_vars.items() if not v]
+            if missing_vars:
+                print(f"🆘 CRITICAL: The following R2 variables are MISSING on Render: {', '.join(missing_vars)}")
+            else:
+                print("🤔 All R2 Env Vars seem present in os.getenv, but s3_client failed to initialize. Check for typos in keys.")
+            
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Cloudflare R2 is not configured. Missing: {', '.join(missing_vars) if missing_vars else 'Check initialization'}"
+            )
 
         print(f"DEBUG: [STEP 2] Reading video file data...")
         file_data = await file.read()
