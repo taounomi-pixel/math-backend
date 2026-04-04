@@ -69,7 +69,8 @@ r2_config = Config(
 )
 
 s3_client = None
-if all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT_URL]):
+r2_creds = [R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT_URL]
+if all(r2_creds):
     try:
         s3_client = boto3.client(
             's3',
@@ -82,7 +83,12 @@ if all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT_URL]):
     except Exception as e:
         print(f"❌ FAILED to initialize R2 S3 Client: {e}")
 else:
-    print("⚠️ WARNING: Cloudflare R2 credentials missing. S3 operations disabled.")
+    missing = []
+    if not R2_ACCESS_KEY_ID: missing.append("R2_ACCESS_KEY_ID")
+    if not R2_SECRET_ACCESS_KEY: missing.append("R2_SECRET_ACCESS_KEY")
+    if not R2_ENDPOINT_URL: missing.append("R2_ENDPOINT_URL")
+    print(f"⚠️ WARNING: Cloudflare R2 credentials missing: {', '.join(missing)}")
+    print("S3 operations disabled.")
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
