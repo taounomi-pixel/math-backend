@@ -60,14 +60,12 @@ class Video(VideoBase, table=True):
 # -----------------
 # Comment Models
 # -----------------
-class CommentBase(SQLModel):
-    content: str
-
 class Comment(CommentBase, table=True):
     __tablename__ = "comments"
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id", ondelete="CASCADE")
     video_id: int = Field(foreign_key="videos.id", ondelete="CASCADE")
+    parent_id: Optional[int] = Field(default=None, foreign_key="comments.id", ondelete="CASCADE")
     created_at: datetime = Field(
         sa_column=Column(DateTime(timezone=True), default=get_utc_now)
     )
@@ -75,6 +73,30 @@ class Comment(CommentBase, table=True):
     # Relationships
     user: User = Relationship(back_populates="comments")
     video: Video = Relationship(back_populates="comments")
+    likes: List["CommentLike"] = Relationship(back_populates="comment", cascade_delete=True)
+    replies: List["Comment"] = Relationship(
+        sa_relationship_kwargs={"remote_side": "Comment.parent_id"},
+        back_populates="parent"
+    )
+    parent: Optional["Comment"] = Relationship(
+        sa_relationship_kwargs={"remote_side": "Comment.id"},
+        back_populates="replies"
+    )
+
+# -----------------
+# Comment Likes (Many-To-Many)
+# -----------------
+class CommentLike(SQLModel, table=True):
+    __tablename__ = "comment_likes"
+    user_id: int = Field(foreign_key="users.id", primary_key=True, ondelete="CASCADE")
+    comment_id: int = Field(foreign_key="comments.id", primary_key=True, ondelete="CASCADE")
+    created_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), default=get_utc_now)
+    )
+
+    # Relationships
+    user: User = Relationship()
+    comment: Comment = Relationship(back_populates="likes")
 
 # -----------------
 # Like Many-To-Many
