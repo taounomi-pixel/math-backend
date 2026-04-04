@@ -1092,19 +1092,28 @@ async def upload_video(
         if kind is None or not kind.mime.startswith('video/'):
             raise HTTPException(status_code=400, detail="Invalid file type. Only genuine videos are permitted.")
 
+        print(f"DEBUG: Starting R2 upload for {unique_filename}...")
         # Use R2 (S3) logic
-        s3_client.put_object(
-            Bucket=R2_BUCKET_NAME,
-            Key=unique_filename,
-            Body=file_data,
-            ContentType=file.content_type
-        )
+        try:
+            s3_client.put_object(
+                Bucket=R2_BUCKET_NAME,
+                Key=unique_filename,
+                Body=file_data,
+                ContentType=file.content_type
+            )
+            print(f"✅ DEBUG: R2 upload successful: {unique_filename}")
+        except Exception as s3_err:
+            print(f"❌ DEBUG: R2 upload FAILED: {s3_err}")
+            raise HTTPException(status_code=500, detail=f"R2 storage failure: {str(s3_err)}")
             
         # Get public URL
         video_url = f"{R2_PUBLIC_DOMAIN}/{unique_filename}"
              
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to upload video to Cloudflare R2: {str(e)}")
+        print(f"❌ DEBUG: Unexpected upload error: {e}")
+        raise HTTPException(status_code=500, detail=f"Backend upload process error: {str(e)}")
     
     # Optional Source Code Upload
     manim_source_url = None
@@ -1122,24 +1131,34 @@ async def upload_video(
                 ContentType="text/plain; charset=utf-8"
             )
             manim_source_url = f"{R2_PUBLIC_DOMAIN}/{source_unique_filename}"
+            print(f"✅ DEBUG: Manim source upload success: {source_unique_filename}")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to upload Manim source to Cloudflare R2: {str(e)}")
+            print(f"❌ DEBUG: Manim source upload FAILED: {e}")
+            raise HTTPException(status_code=500, detail=f"Manim source storage failure: {str(e)}")
     
-    new_video = Video(
-        title=title,
-        category_l1=category_l1,
-        category_l2=category_l2,
-        tags=tags,
-        video_url=video_url,
-        manim_source_url=manim_source_url,
-        uploader_id=current_user.id
-    )
-    
-    session.add(new_video)
-    session.commit()
-    session.refresh(new_video)
-    
-    return {"message": "Video uploaded successfully", "video": new_video}
+    try:
+        print(f"DEBUG: Creating database record for {title}...")
+        new_video = Video(
+            title=title,
+            category_l1=category_l1,
+            category_l2=category_l2,
+            tags=tags,
+            video_url=video_url,
+            manim_source_url=manim_source_url,
+            uploader_id=current_user.id
+        )
+        
+        session.add(new_video)
+        session.commit()
+        session.refresh(new_video)
+        print(f"✅ DEBUG: Database record committed successfully: ID {new_video.id}")
+        
+        return {"message": "Video uploaded successfully", "video": new_video}
+    except Exception as db_err:
+        print(f"❌ DEBUG: Database commit FAILED: {db_err}")
+        # Rollback is handled by session management usually, but explicit is better if using raw sessions
+        session.rollback()
+        raise HTTPException(status_code=500, detail=f"Database persistence failure: {str(db_err)}")
 
 @app.get("/api/videos")
 def get_videos(request: Request, session: Session = Depends(get_session)):
