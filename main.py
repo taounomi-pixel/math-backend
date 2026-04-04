@@ -1156,8 +1156,20 @@ async def upload_video(
         return {"message": "Video uploaded successfully", "video": new_video}
     except Exception as db_err:
         print(f"❌ DEBUG: Database commit FAILED: {db_err}")
-        # Rollback is handled by session management usually, but explicit is better if using raw sessions
         session.rollback()
+        
+        # Cleanup uploaded files from R2 on DB failure to prevent orphaned objects
+        try:
+            s3_client.delete_object(Bucket=R2_BUCKET_NAME, Key=unique_filename)
+            if manim_source_url:
+                # Need to extract filename from URL or store the key earlier
+                # Based on previous logic, source_unique_filename was used
+                source_key = manim_source_url.split('/')[-1]
+                s3_client.delete_object(Bucket=R2_BUCKET_NAME, Key=source_key)
+            print(f"🗑️ DEBUG: R2 cleanup successful after DB failure")
+        except Exception as cleanup_err:
+            print(f"⚠️ DEBUG: R2 cleanup FAILED: {cleanup_err}")
+            
         raise HTTPException(status_code=500, detail=f"Database persistence failure: {str(db_err)}")
 
 @app.get("/api/videos")
