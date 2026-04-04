@@ -14,7 +14,7 @@ import resend
 import traceback
 # Local imports
 from database import create_db_and_tables, engine, supabase, supabase_admin, SUPABASE_BUCKET, s3_client, R2_BUCKET_NAME, R2_PUBLIC_DOMAIN
-from models import User, UserBase, UserRead, Video, Like, Comment, VerificationCode
+from models import User, UserBase, UserRead, Video, Like, Comment, CommentLike, VerificationCode
 from auth import verify_password, get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM, verify_supabase_token
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -1336,6 +1336,152 @@ def delete_video(
     session.commit()
     
     return {"message": "Video deleted successfully"}
+
+# -----------------
+# Comment API Routes
+# -----------------
+
+@app.get("/api/videos/{video_id}/comments")
+def get_video_comments(
+    video_id: int, 
+    request: Request,
+    session: Session = Depends(get_session)
+):
+    """
+    Returns a hierarchical tree of comments for a video.
+    """
+    # Check current user for like status
+    current_user_id = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            from jose import jwt
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            current_user_id = payload.get("id")
+        except:
+            pass
+
+    # Fetch all comments for this video
+    comments = session.exec(
+        select(Comment).where(Comment.video_id == video_id).order_by(Comment.created_at.asc())
+    ).all()
+    
+    # Get all likes for these comments to build is_liked mapping
+    comment_ids = [c.id for c in comments]
+    my_likes = set()
+    if current_user_id and comment_ids:
+        likes_query = select(CommentLike).where(
+            CommentLike.user_id == current_user_id,
+            CommentLike.comment_id.in_(comment_ids)
+        )
+        my_likes = set(l.comment_id for l in session.exec(likes_query).all())
+
+    # Build a map of comments by ID
+    comment_map = {}
+    for c in comments:
+        comment_map[c.id] = {
+            "id": c.id,
+            "content": c.content,
+            "user_id": c.user_id,
+            "username": c.user.username,
+            "created_at": c.created_at,
+            "likes_count": len(c.likes),
+            "is_liked": c.id in my_likes,
+            "parent_id": c.parent_id,
+            "replies": []
+        }
+    
+    # Assemble the tree
+    tree = []
+    for c_id, c_data in comment_map.items():
+        if c_data["parent_id"] is None:
+            tree.append(c_data)
+        else:
+            parent = comment_map.get(c_data["parent_id"])
+            if parent:
+                parent["replies"].append(c_data)
+                
+    return tree
+
+@app.post("/api/comments")
+def post_comment(
+    comment_data: dict, 
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Post a new comment or a reply.
+    """
+    content = comment_data.get("content")
+    video_id = comment_data.get("video_id")
+    parent_id = comment_data.get("parent_id")
+    
+    if not content or not video_id:
+        raise HTTPException(status_code=400, detail="Missing content or video_id")
+        
+    new_comment = Comment(
+        content=content,
+        user_id=current_user.id,
+        video_id=video_id,
+        parent_id=parent_id
+    )
+    session.add(new_comment)
+    session.commit()
+    session.refresh(new_comment)
+    
+    return {"message": "Comment posted", "id": new_comment.id}
+
+@app.post("/api/comments/{comment_id}/toggle-like")
+def toggle_comment_like(
+    comment_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Toggle like on a comment.
+    """
+    comment = session.get(Comment, comment_id)
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+        
+    existing = session.exec(
+        select(CommentLike).where(
+            CommentLike.user_id == current_user.id,
+            CommentLike.comment_id == comment_id
+        )
+    ).first()
+    
+    if existing:
+        session.delete(existing)
+        action = "unliked"
+    else:
+        new_like = CommentLike(user_id=current_user.id, comment_id=comment_id)
+        session.add(new_like)
+        action = "liked"
+        
+    session.commit()
+    return {"action": action}
+
+@app.delete("/api/comments/{comment_id}")
+def delete_comment(
+    comment_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Delete a comment.
+    """
+    comment = session.get(Comment, comment_id)
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+        
+    if comment.user_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    session.delete(comment)
+    session.commit()
+    return {"message": "Comment deleted"}
 
 @app.get("/")
 def read_root():

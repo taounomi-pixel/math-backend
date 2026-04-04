@@ -60,6 +60,9 @@ class Video(VideoBase, table=True):
 # -----------------
 # Comment Models
 # -----------------
+class CommentBase(SQLModel):
+    content: str
+
 class Comment(CommentBase, table=True):
     __tablename__ = "comments"
     id: Optional[int] = Field(default=None, primary_key=True)
