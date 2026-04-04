@@ -1067,34 +1067,34 @@ async def upload_video(
     """
     print(f"DEBUG: Received upload request. Title: {title}")
     print(f"DEBUG: Video file: {file.filename if file else 'None'}")
-    print(f"DEBUG: Source file: {source_file.filename if source_file else 'None'}")
+    
     if not file.filename.endswith('.mp4'):
         raise HTTPException(status_code=400, detail="Only .mp4 files are supported.")
         
     unique_filename = f"{uuid.uuid4()}_{file.filename}"
+    video_url = None
+    manim_source_url = None
     
-    # Force Cloud Storage requirement (Cloudflare R2)
-    if not s3_client:
-        raise HTTPException(
-            status_code=500, 
-            detail="Cloudflare R2 is not configured. Cloud upload is required."
-        )
-        
     try:
-        # Read the file data
+        print(f"DEBUG: [STEP 1] Checking s3_client...")
+        if not s3_client:
+            print("❌ DEBUG: s3_client is NONE!")
+            raise HTTPException(status_code=500, detail="Cloudflare R2 is not configured.")
+
+        print(f"DEBUG: [STEP 2] Reading video file data...")
         file_data = await file.read()
+        print(f"DEBUG: [STEP 3] Video file read complete. Size: {len(file_data)} bytes")
             
-        # 1. Size constraint (30MB limit)
+        print(f"DEBUG: [STEP 4] Size constraint check...")
         if len(file_data) > 30 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="File too large. Maximum size allowed is 30MB.")
+            raise HTTPException(status_code=413, detail="File too large (Max 30MB).")
         
-        # 2. Magic byte verification
+        print(f"DEBUG: [STEP 5] Magic byte verification...")
         kind = filetype.guess(file_data[:2048])
         if kind is None or not kind.mime.startswith('video/'):
-            raise HTTPException(status_code=400, detail="Invalid file type. Only genuine videos are permitted.")
+            raise HTTPException(status_code=400, detail="Invalid file type.")
 
-        print(f"DEBUG: Starting R2 upload for {unique_filename}...")
-        # Use R2 (S3) logic
+        print(f"DEBUG: [STEP 6] Starting R2 upload for {unique_filename}...")
         try:
             s3_client.put_object(
                 Bucket=R2_BUCKET_NAME,
@@ -1102,29 +1102,32 @@ async def upload_video(
                 Body=file_data,
                 ContentType=file.content_type
             )
-            print(f"✅ DEBUG: R2 upload successful: {unique_filename}")
+            print(f"✅ DEBUG: [STEP 7] R2 upload successful: {unique_filename}")
+            video_url = f"{R2_PUBLIC_DOMAIN}/{unique_filename}"
         except Exception as s3_err:
-            print(f"❌ DEBUG: R2 upload FAILED: {s3_err}")
+            print(f"❌ DEBUG: [STEP 8] R2 upload FAILED: {s3_err}")
+            print(traceback.format_exc())
             raise HTTPException(status_code=500, detail=f"R2 storage failure: {str(s3_err)}")
-            
-        # Get public URL
-        video_url = f"{R2_PUBLIC_DOMAIN}/{unique_filename}"
              
-    except HTTPException:
+    except HTTPException as he:
+        print(f"❌ DEBUG: HTTPException in upload_video (video block): {he.status_code} - {he.detail}")
         raise
     except Exception as e:
-        print(f"❌ DEBUG: Unexpected upload error: {e}")
-        raise HTTPException(status_code=500, detail=f"Backend upload process error: {str(e)}")
+        print(f"❌ DEBUG: UNEXPECTED ERROR in upload_video (video block): {e}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Backend process fatal error: {str(e)}")
     
     # Optional Source Code Upload
-    manim_source_url = None
     if source_file and source_file.filename:
+        print(f"DEBUG: [STEP 10] Handling optional source file: {source_file.filename}")
         if not source_file.filename.endswith('.py'):
             raise HTTPException(status_code=400, detail="Only .py files are supported for Manim source.")
             
         source_unique_filename = f"{uuid.uuid4()}_{source_file.filename}"
         try:
+            print(f"DEBUG: [STEP 11] Reading source file...")
             source_data = await source_file.read()
+            print(f"DEBUG: [STEP 12] Uploading source to R2...")
             s3_client.put_object(
                 Bucket=R2_BUCKET_NAME,
                 Key=source_unique_filename,
@@ -1132,13 +1135,17 @@ async def upload_video(
                 ContentType="text/plain; charset=utf-8"
             )
             manim_source_url = f"{R2_PUBLIC_DOMAIN}/{source_unique_filename}"
-            print(f"✅ DEBUG: Manim source upload success: {source_unique_filename}")
+            print(f"✅ DEBUG: [STEP 13] Manim source upload success: {source_unique_filename}")
         except Exception as e:
-            print(f"❌ DEBUG: Manim source upload FAILED: {e}")
+            print(f"❌ DEBUG: [STEP 14] Source upload FAILED: {e}")
+            print(traceback.format_exc())
+            # Cleanup already uploaded video if source fails? For now just fail.
             raise HTTPException(status_code=500, detail=f"Manim source storage failure: {str(e)}")
+    else:
+        print("DEBUG: [STEP 10] No source file provided, skipping source upload.")
     
     try:
-        print(f"DEBUG: Creating database record for {title}...")
+        print(f"DEBUG: [STEP 15] Creating database record for {title}...")
         new_video = Video(
             title=title,
             category_l1=category_l1,
@@ -1152,14 +1159,23 @@ async def upload_video(
         session.add(new_video)
         session.commit()
         session.refresh(new_video)
-        print(f"✅ DEBUG: Database record committed successfully: ID {new_video.id}")
+        print(f"✅ DEBUG: [STEP 16] Database record committed successfully: ID {new_video.id}")
         
         return {"message": "Video uploaded successfully", "video": new_video}
     except Exception as e:
-        print(f"❌ CRITICAL ERROR IN VIDEO UPLOAD: {e}")
+        print(f"❌ [STEP 17] CRITICAL ERROR IN DATABASE COMMIT: {e}")
         print(traceback.format_exc())
         session.rollback()
-        raise HTTPException(status_code=500, detail=f"Backend process error: {str(e)}")
+        # Cleanup R2 objects if DB fails
+        try:
+            print(f"DEBUG: Rolling back R2 upload for {unique_filename}...")
+            s3_client.delete_object(Bucket=R2_BUCKET_NAME, Key=unique_filename)
+            if manim_source_url:
+                source_key = manim_source_url.split('/')[-1]
+                s3_client.delete_object(Bucket=R2_BUCKET_NAME, Key=source_key)
+        except:
+            pass
+        raise HTTPException(status_code=500, detail=f"Database sync error: {str(e)}")
 
 @app.get("/api/videos")
 def get_videos(request: Request, session: Session = Depends(get_session)):
