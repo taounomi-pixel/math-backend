@@ -99,6 +99,16 @@ def get_session():
         yield session
 
 # -----------------
+# Health Check (Keep-alive)
+# -----------------
+@app.get("/api/health")
+async def health_check():
+    """
+    Lightweight endpoint for uptime monitors to prevent Render from sleeping.
+    """
+    return {"status": "alive", "message": "MathVis backend is running"}
+
+# -----------------
 # Auth Routes
 # -----------------
 from pydantic import BaseModel
