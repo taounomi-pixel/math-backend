@@ -1248,6 +1248,47 @@ def get_videos(request: Request, session: Session = Depends(get_session)):
         
     return results
 
+@app.get("/api/videos/{video_id}")
+def get_video_detail(video_id: int, request: Request, session: Session = Depends(get_session)):
+    """
+    Get details for a single video.
+    """
+    # Optional authentication for like status
+    current_user_id = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        try:
+            from jose import jwt
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            current_user_id = payload.get("id")
+        except:
+            pass
+
+    v = session.get(Video, video_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="Video not found")
+        
+    is_liked = False
+    if current_user_id:
+        is_liked = any(l.user_id == current_user_id for l in v.likes)
+
+    return {
+        "id": v.id,
+        "title": v.title,
+        "category_l1": v.category_l1,
+        "category_l2": v.category_l2,
+        "tags": v.tags.split(',') if v.tags else [],
+        "video_url": v.video_url,
+        "manim_source_url": v.manim_source_url,
+        "view_count": v.view_count,
+        "upload_time": v.upload_time,
+        "uploader_username": v.uploader.username,
+        "uploader_id": v.uploader_id,
+        "like_count": len(v.likes),
+        "_liked": is_liked
+    }
+
 @app.post("/api/videos/{video_id}/like")
 def toggle_like_video(
     video_id: int, 
