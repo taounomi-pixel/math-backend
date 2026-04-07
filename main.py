@@ -210,12 +210,24 @@ def register_user(request: Request, user_in: UserCreate, session: Session = Depe
     session.commit()
     session.refresh(new_user)
     
-    # Return plain dict to avoid Pydantic v2 serialization issues with SQLModel
+    # Issue JWT token immediately — user already verified email via OTP
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": new_user.username, "id": new_user.id},
+        expires_delta=access_token_expires
+    )
+    
     return {
-        "id": new_user.id,
-        "username": new_user.username,
-        "email": new_user.email,
-        "is_admin": new_user.is_admin
+        "status": "ok",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": new_user.id,
+            "username": new_user.username,
+            "email": new_user.email,
+            "is_admin": new_user.is_admin,
+            "bound_providers": [],
+        }
     }
 
 @app.post("/api/login")
