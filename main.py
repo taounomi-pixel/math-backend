@@ -179,7 +179,7 @@ def register_user(request: Request, user_in: UserCreate, session: Session = Depe
     ).first()
 
     if not record:
-        raise HTTPException(status_code=400, detail="验证码错误")
+        raise HTTPException(status_code=400, detail="验证码错误，请检查最新收到的邮件")
     
     if record.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
         session.delete(record)
