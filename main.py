@@ -161,7 +161,7 @@ def get_user_identities(user: User) -> List[str]:
         return ["bound"]
     return []
 
-@app.post("/api/register", response_model=UserRead)
+@app.post("/api/register")
 @limiter.limit("5/minute")
 def register_user(request: Request, user_in: UserCreate, session: Session = Depends(get_session)):
     """
@@ -210,11 +210,13 @@ def register_user(request: Request, user_in: UserCreate, session: Session = Depe
     session.commit()
     session.refresh(new_user)
     
-    # Attach virtual identities for response_model
-    new_user.identities = get_user_identities(new_user)
-    return new_user
-    new_user.identities = []
-    return new_user
+    # Return plain dict to avoid Pydantic v2 serialization issues with SQLModel
+    return {
+        "id": new_user.id,
+        "username": new_user.username,
+        "email": new_user.email,
+        "is_admin": new_user.is_admin
+    }
 
 @app.post("/api/login")
 @limiter.limit("5/minute")
